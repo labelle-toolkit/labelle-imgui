@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
 
     // GUI adapter module — satisfies GuiInterface contract.
     // Does NOT depend on any backend. The bridge wires the backend connection.
-    const gui_mod = b.addModule("gui", .{
+    const gui_mod = b.addModule("labelle_imgui", .{
         .root_source_file = b.path("src/adapter.zig"),
         .target = target,
         .optimize = optimize,
