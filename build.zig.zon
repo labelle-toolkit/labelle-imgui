@@ -1,7 +1,7 @@
 .{
     .name = .labelle_imgui,
     .version = "0.1.0",
-    .fingerprint = 0x0,
+    .fingerprint = 0x782948a16f8e87ea,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .cimgui = .{
