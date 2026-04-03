@@ -13,7 +13,7 @@
         },
         .@"raylib-zig" = .{
             .url = "https://github.com/raylib-zig/raylib-zig/archive/refs/heads/devel.tar.gz",
-            .hash = "1220be9b99caeccd9be5a29222e6c93db3cb518711853eda4f744d254c88f88aa827",
+            .hash = "122075d1fd13801934d9d73d371ff8449787cc151517b9925a11be241d08209cc51d",
         },
     },
     .paths = .{
