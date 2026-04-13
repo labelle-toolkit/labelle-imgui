@@ -5,8 +5,10 @@
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .sokol = .{
-            .url = "https://github.com/floooh/sokol-zig/archive/refs/heads/master.tar.gz",
-            .hash = "12203cad7061e35c3112e720991e183eea0e5c67976c5c863ef4ca7c11620f3d2623",
+            // Pinned to the same commit as labelle-sokol to avoid duplicate module errors.
+            // See labelle-toolkit/labelle-assembler#... — bumping requires updating hash via `zig fetch`.
+            .url = "https://github.com/floooh/sokol-zig/archive/8e2d21bebd8428d82a1f320e999c058303c8323d.tar.gz",
+            .hash = "sokol-0.1.0-pb1HKxTaNgA8rXBh41wxEucgmR4YPuoOXGeXbFyGPvTK",
         },
         .cimgui = .{
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
