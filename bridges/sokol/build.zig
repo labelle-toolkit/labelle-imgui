@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     // Android cross-compilation: sokol must not attempt to link system libs
     // (GLESv3/EGL/android/log) because the NDK library paths are only known
     // to the top-level game build. The game .so handles those links.
-    const is_android = target.result.os.tag == .linux and target.result.abi.isAndroid();
+    const is_android = target.result.isAndroid();
 
     const dep_cimgui = b.dependency("cimgui", .{
         .target = target,
@@ -47,10 +47,12 @@ pub fn build(b: *std.Build) void {
     if (is_android) {
         const ndk_sysroot = findAndroidNdkSysroot(b) orelse
             @panic("Android NDK not found. Set ANDROID_HOME or ANDROID_NDK_HOME.");
-        const arch_triple: []const u8 = if (target.result.cpu.arch == .x86_64)
-            "x86_64-linux-android"
-        else
-            "aarch64-linux-android";
+        const arch_triple: []const u8 = switch (target.result.cpu.arch) {
+            .x86_64 => "x86_64-linux-android",
+            .x86 => "i686-linux-android",
+            .arm => "arm-linux-androideabi",
+            else => "aarch64-linux-android", // .aarch64 and any future arch
+        };
         const ndk_inc = b.pathJoin(&.{ ndk_sysroot, "usr/include" });
         const ndk_arch_inc = b.pathJoin(&.{ ndk_sysroot, "usr/include", arch_triple });
         for (&[_]*std.Build.Step.Compile{ sokol_artifact, cimgui_artifact }) |artifact| {
@@ -101,14 +103,16 @@ fn findAndroidNdkSysroot(b: *std.Build) ?[]const u8 {
     defer ndk_dir.close();
 
     var latest: ?[]const u8 = null;
+    var latest_major: u32 = 0;
     var iter = ndk_dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
-        if (latest) |prev| {
-            if (std.mem.order(u8, entry.name, prev) == .gt) {
-                latest = b.dupe(entry.name);
-            }
-        } else {
+        // NDK dirs are named like "27.2.12479018" — compare by major version
+        // number to avoid string-order bugs with multi-digit versions (e.g. "9" > "27").
+        const dot = std.mem.indexOfScalar(u8, entry.name, '.') orelse entry.name.len;
+        const major = std.fmt.parseInt(u32, entry.name[0..dot], 10) catch 0;
+        if (major > latest_major) {
+            latest_major = major;
             latest = b.dupe(entry.name);
         }
     }
