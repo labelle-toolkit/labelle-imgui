@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     bridge_mod.addImport("sokol", sokol_mod);
+    bridge_mod.addImport("cimgui", dep_cimgui.module(cimgui_conf.module_name));
     bridge_mod.linkLibrary(sokol_artifact);
     bridge_mod.linkLibrary(cimgui_artifact);
 

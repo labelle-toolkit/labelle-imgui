@@ -3,6 +3,7 @@
 const sokol = @import("sokol");
 const simgui = sokol.imgui;
 const sapp = sokol.app;
+const ig = @import("cimgui");
 
 export fn imgui_bridge_setup(dark_theme: bool) void {
     simgui.setup(.{
@@ -10,8 +11,8 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
         .no_default_font = false,
         .logger = .{ .func = sokol.log.func },
     });
-    if (dark_theme) {
-        // cimgui dark theme is the default for sokol_imgui
+    if (!dark_theme) {
+        ig.igStyleColorsLight(null);
     }
 }
 
@@ -34,6 +35,9 @@ export fn imgui_bridge_shutdown() void {
 
 /// Handle sokol_app events for imgui input (mouse, keyboard, etc.).
 /// The sokol backend template should call this from its event callback.
-pub fn handleEvent(ev: [*c]const sapp.Event) bool {
-    return simgui.handleEvent(ev.*);
+export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
+    if (ev) |e| {
+        return simgui.handleEvent(e.*);
+    }
+    return false;
 }
