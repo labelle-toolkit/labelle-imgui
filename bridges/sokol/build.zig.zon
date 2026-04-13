@@ -1,0 +1,21 @@
+.{
+    .name = .sokol_imgui_bridge,
+    .version = "0.1.0",
+    .fingerprint = 0x695ba67f987cfe91,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .sokol = .{
+            .url = "https://github.com/floooh/sokol-zig/archive/refs/heads/master.tar.gz",
+            .hash = "12203cad7061e35c3112e720991e183eea0e5c67976c5c863ef4ca7c11620f3d2623",
+        },
+        .cimgui = .{
+            .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
+            .hash = "cimgui-0.1.0-44ClkXnYlwBKnil7TfCWL9z1Zo_2YJCJREzrpdFiGvA1",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
