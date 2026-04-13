@@ -12,7 +12,10 @@ pub fn build(b: *std.Build) void {
     // Android cross-compilation: sokol must not attempt to link system libs
     // (GLESv3/EGL/android/log) because the NDK library paths are only known
     // to the top-level game build. The game .so handles those links.
-    const is_android = target.result.isAndroid();
+    // Note: std.Target.isAndroid() is not available in build.zig in Zig 0.15;
+    // check the ABI directly (.android = arm64/x86_64, .androideabi = arm/x86).
+    const is_android = target.result.os.tag == .linux and
+        (target.result.abi == .android or target.result.abi == .androideabi);
 
     const dep_cimgui = b.dependency("cimgui", .{
         .target = target,
