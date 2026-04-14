@@ -1,0 +1,20 @@
+.{
+    .name = .sokol_imgui_bridge,
+    .version = "0.1.0",
+    .fingerprint = 0x695ba67faf050615,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .sokol = .{
+            // Must match labelle-assembler/backends/sokol/build.zig.zon —
+            // the bridge compiles against these headers but the backend
+            // links the actual sokol_clib, so struct layouts must agree.
+            .url = "https://github.com/floooh/sokol-zig/archive/8e2d21bebd8428d82a1f320e999c058303c8323d.tar.gz",
+            .hash = "sokol-0.1.0-pb1HKxTaNgA8rXBh41wxEucgmR4YPuoOXGeXbFyGPvTK",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

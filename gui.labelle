@@ -5,5 +5,6 @@
     .lifecycle = .{ .init = true, .shutdown = true },
     .bridges = .{
         .raylib = .{ .adapter = "rlimgui_bridge", .path = "./bridges/raylib" },
+        .sokol = .{ .adapter = "sokol_imgui_bridge", .path = "./bridges/sokol", .needs_sokol_imgui = true },
     },
 }
