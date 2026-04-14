@@ -13,16 +13,33 @@
 #include <string.h>
 #include <stdbool.h>
 
-#define SOKOL_GLCORE
+// Use SOKOL_DUMMY_BACKEND for header inclusion — we only touch backend-
+// agnostic types here (simgui_desc_t / simgui_frame_desc_t), and the
+// bridge static lib must not bake in a backend choice. The actual exe's
+// sokol_clib (built by labelle-sokol) decides the real backend at its
+// own compile time, and link-step ABI stays consistent because the
+// types we use are not gated on backend macros.
+#define SOKOL_DUMMY_BACKEND
 #include "sokol_gfx.h"
 #include "sokol_app.h"
 #include "sokol_imgui.h"
 
+// Forward declarations from cimgui.h — we only need these two function
+// signatures and they're stable plain-C ABI, so we avoid pulling in the
+// whole cimgui dep just for the theme switch. NULL means "apply to the
+// current global style" (matches cimgui's default-arg semantics).
+extern void igStyleColorsDark(void* dst);
+extern void igStyleColorsLight(void* dst);
+
 void imgui_bridge_setup(bool dark_theme) {
-    (void)dark_theme; // sokol_imgui has no built-in theme; defaults to dark
     simgui_desc_t desc;
     memset(&desc, 0, sizeof(desc));
     simgui_setup(&desc);
+    if (dark_theme) {
+        igStyleColorsDark(NULL);
+    } else {
+        igStyleColorsLight(NULL);
+    }
 }
 
 void imgui_bridge_begin(void) {
