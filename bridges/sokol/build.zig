@@ -95,20 +95,20 @@ fn findAndroidNdkSysroot(b: *std.Build) ?[]const u8 {
     };
 
     // Try ANDROID_NDK_HOME directly first.
-    if (std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_HOME") catch null) |ndk_home| {
+    if (b.graph.environ_map.get("ANDROID_NDK_HOME")) |ndk_home| {
         return b.pathJoin(&.{ ndk_home, "toolchains/llvm/prebuilt", host_tag, "sysroot" });
     }
 
     // Scan $ANDROID_HOME/ndk/ for the latest version directory.
-    const android_home = std.process.getEnvVarOwned(b.allocator, "ANDROID_HOME") catch return null;
+    const android_home = b.graph.environ_map.get("ANDROID_HOME") orelse return null;
     const ndk_dir_path = b.pathJoin(&.{ android_home, "ndk" });
-    var ndk_dir = std.fs.cwd().openDir(ndk_dir_path, .{ .iterate = true }) catch return null;
-    defer ndk_dir.close();
+    var ndk_dir = std.Io.Dir.cwd().openDir(b.graph.io, ndk_dir_path, .{ .iterate = true }) catch return null;
+    defer ndk_dir.close(b.graph.io);
 
     var latest: ?[]const u8 = null;
     var latest_major: u32 = 0;
     var iter = ndk_dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(b.graph.io) catch null) |entry| {
         if (entry.kind != .directory) continue;
         // NDK dirs are named like "27.2.12479018" — compare by major version
         // number to avoid string-order bugs with multi-digit versions (e.g. "9" > "27").
