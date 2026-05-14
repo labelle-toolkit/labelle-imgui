@@ -2,7 +2,7 @@
     .name = .labelle_imgui,
     .version = "0.1.0",
     .fingerprint = 0x782948a16f8e87ea,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .cimgui = .{
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
