@@ -1,6 +1,6 @@
 .{
     .name = .sokol_imgui_bridge,
-    .version = "0.1.0",
+    .version = "0.3.2",
     .fingerprint = 0x695ba67f987cfe91,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
