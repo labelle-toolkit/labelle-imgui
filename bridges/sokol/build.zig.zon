@@ -2,7 +2,7 @@
     .name = .sokol_imgui_bridge,
     .version = "0.1.0",
     .fingerprint = 0x695ba67f987cfe91,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .sokol = .{
             // Pinned to the same commit as labelle-sokol to avoid duplicate module errors.

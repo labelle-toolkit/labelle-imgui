@@ -1,7 +1,8 @@
 .{
     .name = .rlimgui_bridge,
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0x2bc4f54da53154de,
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .rlImGui = .{
             .url = "https://github.com/raylib-extras/rlImGui/archive/refs/heads/main.tar.gz",
