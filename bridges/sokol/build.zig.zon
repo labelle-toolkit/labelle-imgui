@@ -1,14 +1,22 @@
 .{
     .name = .sokol_imgui_bridge,
-    .version = "0.1.0",
+    .version = "0.3.2",
     .fingerprint = 0x695ba67f987cfe91,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .sokol = .{
-            // Pinned to the same commit as labelle-sokol to avoid duplicate module errors.
-            // See labelle-toolkit/labelle-assembler#... — bumping requires updating hash via `zig fetch`.
-            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/refs/heads/feat/expose-cached-metal-drawable.tar.gz",
-            .hash = "sokol-0.1.0-pb1HK0lpNwDe6o44qZwZ9THFraqfm68MKix7xr00z7-U",
+            // MUST match the labelle-imgui top-level `.sokol` pin and the
+            // labelle-assembler `backends/sokol` pin exactly — mismatched
+            // commits trigger duplicate-module errors at build time.
+            // Pinned to upstream floooh/sokol-zig; previously tracked the
+            // labelle-toolkit/sokol-zig fork's `feat/expose-cached-metal-
+            // drawable` branch, which is no longer needed now that Path A
+            // (offscreen IOSurface render target) is the canonical
+            // Metal-readback flow. See floooh/sokol#1510 (closed).
+            // Bumping requires `zig fetch --save=sokol <url>` here AND
+            // in `build.zig.zon` at the repo root.
+            .url = "https://github.com/floooh/sokol-zig/archive/8b1a651e6b8e76af3063a4094a5935432eb8afe2.tar.gz",
+            .hash = "sokol-0.1.0-pb1HK1lhNwCdIF2-WujvJqi1YoK7Qvgm14Ywmup5C6_q",
         },
         .cimgui = .{
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",

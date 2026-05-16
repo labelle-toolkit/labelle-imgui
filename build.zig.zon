@@ -1,6 +1,6 @@
 .{
     .name = .labelle_imgui,
-    .version = "0.3.1",
+    .version = "0.3.2",
     .fingerprint = 0x782948a16f8e87ea,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -9,8 +9,12 @@
             .hash = "cimgui-0.1.0-44ClkXnYlwBKnil7TfCWL9z1Zo_2YJCJREzrpdFiGvA1",
         },
         .sokol = .{
-            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/refs/heads/feat/expose-cached-metal-drawable.tar.gz",
-            .hash = "sokol-0.1.0-pb1HK0lpNwDe6o44qZwZ9THFraqfm68MKix7xr00z7-U",
+            // MUST match `bridges/sokol/build.zig.zon`'s sokol pin
+            // and the labelle-assembler `backends/sokol/build.zig.zon`
+            // pin exactly — mismatched commits trigger duplicate-module
+            // errors at build time across consumers that pull both.
+            .url = "https://github.com/floooh/sokol-zig/archive/8b1a651e6b8e76af3063a4094a5935432eb8afe2.tar.gz",
+            .hash = "sokol-0.1.0-pb1HK1lhNwCdIF2-WujvJqi1YoK7Qvgm14Ywmup5C6_q",
         },
     },
     .paths = .{
