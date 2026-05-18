@@ -1,0 +1,68 @@
+From: labelle-toolkit
+Date: 2026-05-18
+Subject: [PATCH] sokol-zig: expose SOKOL_IMGUI_NO_SOKOL_APP via build option
+
+sokol_imgui.h already supports a SOKOL_IMGUI_NO_SOKOL_APP compile-time
+flag that disables its sokol_app dependency. The caller passes
+width/height/dpi_scale/delta_time explicitly to simgui_new_frame, and
+the keyboard/mouse-cursor helpers that read from sokol_app become
+no-ops. This is exactly what a headless render-to-texture workflow
+needs (e.g. an editor preview that renders into a shared IOSurface
+without owning an NSWindow).
+
+sokol-zig's build.zig exposes `with_sokol_imgui` for the bindings but
+doesn't currently forward `SOKOL_IMGUI_NO_SOKOL_APP`. This patch adds
+a parallel `with_sokol_imgui_no_app` option that defines the flag when
+compiling sokol_imgui.c. Default is `false` — fully backward
+compatible; existing users see no change.
+
+Tested locally as part of labelle-assembler#140 (labelle-toolkit's
+no-window editor-preview work).
+
+--- a/build.zig
++++ b/build.zig
+@@ -73,1 +73,2 @@
+     const opt_with_sokol_imgui = b.option(bool, "with_sokol_imgui", "Add support for sokol_imgui.h bindings") orelse false;
++    const opt_with_sokol_imgui_no_app = b.option(bool, "with_sokol_imgui_no_app", "Define SOKOL_IMGUI_NO_SOKOL_APP when compiling sokol_imgui.h (headless mode — no sokol_app dependency)") orelse false;
+     const opt_with_tracing = b.option(bool, "with_tracing", "Add support for sokol_gfx tracing and debug UI") orelse false;
+@@ -95,1 +96,2 @@
+         .with_sokol_imgui = opt_with_sokol_imgui or opt_with_tracing,
++        .with_sokol_imgui_no_app = opt_with_sokol_imgui_no_app,
+         .with_tracing = opt_with_tracing,
+@@ -141,1 +143,8 @@
+     with_sokol_imgui: bool = false,
++    /// Define SOKOL_IMGUI_NO_SOKOL_APP — disables sokol_app dependency in
++    /// sokol_imgui.h. The caller must pass `width`/`height`/`dpi_scale`
++    /// explicitly to `simgui_new_frame`; keyboard/mouse cursor helpers
++    /// that read from sokol_app become no-ops. Useful for headless
++    /// preview / render-to-texture setups.
++    with_sokol_imgui_no_app: bool = false,
+     with_tracing: bool = false,
+@@ -316,1 +325,4 @@
+     if (options.with_sokol_imgui) {
++        if (options.with_sokol_imgui_no_app) {
++            try cflags.appendBounded("-DSOKOL_IMGUI_NO_SOKOL_APP");
++        }
+         if (options.sokol_imgui_cprefix) |cprefix| {
+
+Usage from a consuming build.zig:
+
+    const dep_sokol = b.dependency("sokol", .{
+        .target = target,
+        .optimize = optimize,
+        .with_sokol_imgui = true,
+        .with_sokol_imgui_no_app = true,
+    });
+
+Consumers must then provide width/height to simgui_new_frame manually
+instead of relying on sapp_*. See labelle-toolkit/labelle-imgui's
+bridges/sokol/src/bridge.zig for a reference pattern that falls back
+to sane defaults when sapp returns zeros.
+
+Upstream:
+    https://github.com/floooh/sokol-zig
+This patch is local-only until upstreamed; while pending it must be
+applied to the cached sokol-zig copy at
+    ~/.cache/zig/p/sokol-0.1.0-<hash>/build.zig
+
+after any fresh `zig fetch`.
