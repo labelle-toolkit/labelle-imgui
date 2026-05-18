@@ -6,9 +6,17 @@ const sapp = sokol.app;
 const ig = @import("cimgui");
 
 export fn imgui_bridge_setup(dark_theme: bool) void {
+    // Pin pipeline formats so simgui's pipeline matches the headless
+    // preview render target (BGRA8 IOSurface w/ DEPTH_STENCIL, no MSAA).
+    // The sokol-gfx env defaults to these for both windowed and headless
+    // builds, but specifying them explicitly avoids relying on swapchain
+    // inference, which is brittle when sokol_app isn't running.
     simgui.setup(.{
         .ini_filename = null,
         .no_default_font = false,
+        .color_format = .BGRA8,
+        .depth_format = .DEPTH_STENCIL,
+        .sample_count = 1,
         .logger = .{ .func = sokol.log.func },
     });
     if (!dark_theme) {
@@ -31,8 +39,8 @@ export fn imgui_bridge_begin() void {
     // Each field has its own fallback — sokol-app returns zero for any
     // of these in headless mode, and ImGui asserts on DeltaTime == 0
     // past frame 0 even if width/height are valid.
-    if (w <= 0) w = 1024;
-    if (h <= 0) h = 768;
+    if (w <= 0) w = 800;
+    if (h <= 0) h = 600;
     if (dt <= 0) dt = 1.0 / 60.0;
     if (dpi <= 0) dpi = 1.0;
     simgui.newFrame(.{
@@ -52,10 +60,12 @@ export fn imgui_bridge_shutdown() void {
 }
 
 /// Handle sokol_app events for imgui input (mouse, keyboard, etc.).
-/// The sokol backend template should call this from its event callback.
+/// Stubbed: the bridge compiles sokol_imgui with SOKOL_IMGUI_NO_SOKOL_APP,
+/// which excludes `simgui_handle_event` (and the sapp-coupled cursor /
+/// keyboard helpers) from the C build. In headless preview mode this is
+/// fine because events flow through the editor side, not sokol_app.
+/// For a windowed build, a future change can gate this on a build option.
 export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
-    if (ev) |e| {
-        return simgui.handleEvent(e.*);
-    }
+    _ = ev;
     return false;
 }
