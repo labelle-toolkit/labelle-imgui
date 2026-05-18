@@ -24,23 +24,35 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
     }
 }
 
+// Headless preview override. `sapp.width()`/`height()`/`dpiScale()` are
+// unreliable when `SOKOL_IMGUI_NO_SOKOL_APP` is defined — on macOS they
+// return 1/1/0 (not 0/0/0 as you'd hope), which silently bypasses an
+// "is sapp running" check. The embedder calls `imgui_bridge_set_dims`
+// from the headless render loop to give simgui the actual render-target
+// size; otherwise simgui's vertex shader maps every vertex to NDC ~40
+// and the GPU clips the entire ImGui draw away. See labelle-assembler#142.
+var override_w: i32 = 0;
+var override_h: i32 = 0;
+var override_dpi: f32 = 0;
+
+export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
+    override_w = w;
+    override_h = h;
+    override_dpi = dpi;
+}
+
 export fn imgui_bridge_begin() void {
-    // sokol_imgui's simgui_new_frame asserts width/height > 0. In
-    // headless preview mode (labelle-assembler#140) sokol_app never
-    // ran so sapp.width()/height() return 0. Fall back to sensible
-    // defaults so the assert (and ImGui's own sanity checks) pass.
-    // The fallback dims affect ImGui's coordinate space only; the
-    // actual render-target size lives in the IOSurface ring on the
-    // editor side.
-    var w = sapp.width();
-    var h = sapp.height();
+    var w = if (override_w > 0) override_w else sapp.width();
+    var h = if (override_h > 0) override_h else sapp.height();
     var dt = sapp.frameDuration();
-    var dpi = sapp.dpiScale();
-    // Each field has its own fallback — sokol-app returns zero for any
-    // of these in headless mode, and ImGui asserts on DeltaTime == 0
-    // past frame 0 even if width/height are valid.
-    if (w <= 0) w = 800;
-    if (h <= 0) h = 600;
+    var dpi = if (override_dpi > 0) override_dpi else sapp.dpiScale();
+    // sokol_imgui's simgui_new_frame asserts width/height > 0 and ImGui
+    // asserts DeltaTime > 0 past frame 0. Defaults below keep the asserts
+    // happy when an embedder forgets to call `imgui_bridge_set_dims` — but
+    // they don't paper over the real bug (clipped draws); they at least
+    // produce a visible canvas. Fall through with sane defaults.
+    if (w <= 1) w = 800;
+    if (h <= 1) h = 600;
     if (dt <= 0) dt = 1.0 / 60.0;
     if (dpi <= 0) dpi = 1.0;
     simgui.newFrame(.{
