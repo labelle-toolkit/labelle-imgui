@@ -81,3 +81,17 @@ export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
     _ = ev;
     return false;
 }
+
+// Headless-preview input feed (labelle-assembler#143). The embedder
+// drains Preview's input ring each frame and pushes events here; these
+// thin wrappers forward to simgui's add_*_event family, which is
+// available regardless of SOKOL_IMGUI_NO_SOKOL_APP since it doesn't
+// touch sokol_app at all.
+
+export fn imgui_bridge_mouse_pos(x: f32, y: f32) void {
+    simgui.addMousePosEvent(x, y);
+}
+
+export fn imgui_bridge_mouse_button(button: i32, down: bool) void {
+    simgui.addMouseButtonEvent(button, down);
+}
