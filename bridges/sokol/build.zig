@@ -27,10 +27,20 @@ pub fn build(b: *std.Build) void {
     // Build sokol with imgui support enabled.
     // On Android, suppress automatic system-library linking — the final .so
     // already links android/log/GLESv3/EGL via its own root_module.
+    //
+    // labelle-assembler#140: compile sokol_imgui with SOKOL_IMGUI_NO_SOKOL_APP
+    // defined so headless preview mode (no sokol_app, no NSWindow) can drive
+    // simgui by injecting width/height/dpi_scale into simgui_new_frame.
+    // Backward compatible — keyboard/mouse-cursor hooks that the flag
+    // disables are unused in the windowed path anyway (the gui adapter
+    // doesn't call them). Requires the `with_sokol_imgui_no_app` option
+    // in sokol-zig's build.zig — see
+    // labelle-tools/patches/sokol-zig-no-sokol-app.diff for the upstream patch.
     const dep_sokol = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
         .with_sokol_imgui = true,
+        .with_sokol_imgui_no_app = true,
         .dont_link_system_libs = is_android,
     });
 

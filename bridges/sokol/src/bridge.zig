@@ -17,11 +17,29 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
 }
 
 export fn imgui_bridge_begin() void {
+    // sokol_imgui's simgui_new_frame asserts width/height > 0. In
+    // headless preview mode (labelle-assembler#140) sokol_app never
+    // ran so sapp.width()/height() return 0. Fall back to sensible
+    // defaults so the assert (and ImGui's own sanity checks) pass.
+    // The fallback dims affect ImGui's coordinate space only; the
+    // actual render-target size lives in the IOSurface ring on the
+    // editor side.
+    var w = sapp.width();
+    var h = sapp.height();
+    var dt = sapp.frameDuration();
+    var dpi = sapp.dpiScale();
+    // Each field has its own fallback — sokol-app returns zero for any
+    // of these in headless mode, and ImGui asserts on DeltaTime == 0
+    // past frame 0 even if width/height are valid.
+    if (w <= 0) w = 1024;
+    if (h <= 0) h = 768;
+    if (dt <= 0) dt = 1.0 / 60.0;
+    if (dpi <= 0) dpi = 1.0;
     simgui.newFrame(.{
-        .width = sapp.width(),
-        .height = sapp.height(),
-        .delta_time = sapp.frameDuration(),
-        .dpi_scale = sapp.dpiScale(),
+        .width = w,
+        .height = h,
+        .delta_time = dt,
+        .dpi_scale = dpi,
     });
 }
 
