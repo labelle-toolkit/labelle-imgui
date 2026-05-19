@@ -71,15 +71,35 @@ export fn imgui_bridge_shutdown() void {
     simgui.shutdown();
 }
 
-/// Handle sokol_app events for imgui input (mouse, keyboard, etc.).
-/// Stubbed: the bridge compiles sokol_imgui with SOKOL_IMGUI_NO_SOKOL_APP,
-/// which excludes `simgui_handle_event` (and the sapp-coupled cursor /
-/// keyboard helpers) from the C build. In headless preview mode this is
-/// fine because events flow through the editor side, not sokol_app.
-/// For a windowed build, a future change can gate this on a build option.
+/// Handle sokol_app events for imgui input (mouse, scroll, keyboard).
+/// `SOKOL_IMGUI_NO_SOKOL_APP` removed `simgui_handle_event` (the
+/// one-call shortcut that reads from sapp internally), but the
+/// per-event-type APIs (`simgui_add_mouse_pos_event` etc.) are still
+/// available — they don't touch sokol_app. We translate `sapp.Event`
+/// to those calls manually so windowed sokol-app builds keep working.
+/// In headless preview mode no sapp events fire, so this is a no-op.
 export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
-    _ = ev;
-    return false;
+    const e = ev orelse return false;
+    switch (e.type) {
+        .MOUSE_MOVE => simgui.addMousePosEvent(e.mouse_x, e.mouse_y),
+        .MOUSE_DOWN => {
+            simgui.addMousePosEvent(e.mouse_x, e.mouse_y);
+            simgui.addMouseButtonEvent(@intFromEnum(e.mouse_button), true);
+        },
+        .MOUSE_UP => {
+            simgui.addMousePosEvent(e.mouse_x, e.mouse_y);
+            simgui.addMouseButtonEvent(@intFromEnum(e.mouse_button), false);
+        },
+        .MOUSE_SCROLL => simgui.addMouseWheelEvent(e.scroll_x, e.scroll_y),
+        // Keyboard input intentionally not forwarded. `simgui_map_keycode`
+        // (the GLFW-keycode → ImGuiKey_* translation table) is excluded
+        // by SOKOL_IMGUI_NO_SOKOL_APP, and ImGui asserts on un-mapped
+        // key ids (`IsNamedKeyOrMod`). Writing the table inline is doable
+        // but out of scope for #143's mouse-driven menus. KEY_DOWN /
+        // KEY_UP / CHAR fall through to the `else` and report unhandled.
+        else => return false,
+    }
+    return true;
 }
 
 // Headless-preview input feed (labelle-assembler#143). The embedder
