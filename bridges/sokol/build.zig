@@ -71,6 +71,12 @@ pub fn build(b: *std.Build) void {
         for (&[_]*std.Build.Step.Compile{ sokol_artifact, cimgui_artifact }) |artifact| {
             artifact.root_module.addSystemIncludePath(.{ .cwd_relative = ndk_inc });
             artifact.root_module.addSystemIncludePath(.{ .cwd_relative = ndk_arch_inc });
+            // Android shared libs (libgame.so) absorb these static
+            // archives. ld.lld rejects AArch64 R_AARCH64_ABS64 /
+            // R_AARCH64_ADR_PREL_PG_HI21 relocations from non-PIC .o
+            // files inside a shared object, so every TU here must be
+            // PIC. See labelle-assembler#147.
+            artifact.root_module.pic = true;
         }
     }
 
