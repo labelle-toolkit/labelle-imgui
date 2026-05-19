@@ -27,10 +27,20 @@ pub fn build(b: *std.Build) void {
     // Build sokol with imgui support enabled.
     // On Android, suppress automatic system-library linking — the final .so
     // already links android/log/GLESv3/EGL via its own root_module.
+    //
+    // labelle-assembler#140: compile sokol_imgui with SOKOL_IMGUI_NO_SOKOL_APP
+    // defined so headless preview mode (no sokol_app, no NSWindow) can drive
+    // simgui by injecting width/height/dpi_scale into simgui_new_frame.
+    // Backward compatible — keyboard/mouse-cursor hooks that the flag
+    // disables are unused in the windowed path anyway (the gui adapter
+    // doesn't call them). Requires the `with_sokol_imgui_no_app` option
+    // in sokol-zig's build.zig — see
+    // labelle-tools/patches/sokol-zig-no-sokol-app.diff for the upstream patch.
     const dep_sokol = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
         .with_sokol_imgui = true,
+        .with_sokol_imgui_no_app = true,
         .dont_link_system_libs = is_android,
     });
 
@@ -61,6 +71,30 @@ pub fn build(b: *std.Build) void {
         for (&[_]*std.Build.Step.Compile{ sokol_artifact, cimgui_artifact }) |artifact| {
             artifact.root_module.addSystemIncludePath(.{ .cwd_relative = ndk_inc });
             artifact.root_module.addSystemIncludePath(.{ .cwd_relative = ndk_arch_inc });
+        }
+    }
+
+    // On Emscripten, the cimgui C++ compile (imgui.h pulls in <assert.h>,
+    // <string.h>, <math.h>, etc.) cannot find libc headers because Zig
+    // does not ship libc headers for `wasm32-emscripten` — they live in
+    // emsdk's sysroot. Mirror what sokol-zig does for `sokol_clib` and
+    // what `labelle-assembler/backends/sokol/build.zig` does for gfx/audio
+    // (labelle-cli#197): plumb the emsdk sysroot include path into both
+    // the sokol and cimgui C compile artifacts. Gated on `.emscripten`
+    // so desktop / mobile builds remain untouched.
+    //
+    // sokol-zig's `emSdkSetupStep` (which actually populates the sysroot
+    // by running `emsdk install` + `emsdk activate`) is private and only
+    // hooked onto `sokol_clib`. We chain cimgui_clib onto sokol_clib so
+    // the setup completes before cimgui's C++ compile starts — otherwise
+    // the `-isystem ...sysroot/include` argument points at a path that
+    // doesn't yet exist and `<assert.h>` fails to resolve.
+    if (target.result.os.tag == .emscripten) {
+        if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
+            const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
+            sokol_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+            cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+            cimgui_artifact.step.dependOn(&sokol_artifact.step);
         }
     }
 
