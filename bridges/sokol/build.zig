@@ -74,6 +74,30 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // On Emscripten, the cimgui C++ compile (imgui.h pulls in <assert.h>,
+    // <string.h>, <math.h>, etc.) cannot find libc headers because Zig
+    // does not ship libc headers for `wasm32-emscripten` — they live in
+    // emsdk's sysroot. Mirror what sokol-zig does for `sokol_clib` and
+    // what `labelle-assembler/backends/sokol/build.zig` does for gfx/audio
+    // (labelle-cli#197): plumb the emsdk sysroot include path into both
+    // the sokol and cimgui C compile artifacts. Gated on `.emscripten`
+    // so desktop / mobile builds remain untouched.
+    //
+    // sokol-zig's `emSdkSetupStep` (which actually populates the sysroot
+    // by running `emsdk install` + `emsdk activate`) is private and only
+    // hooked onto `sokol_clib`. We chain cimgui_clib onto sokol_clib so
+    // the setup completes before cimgui's C++ compile starts — otherwise
+    // the `-isystem ...sysroot/include` argument points at a path that
+    // doesn't yet exist and `<assert.h>` fails to resolve.
+    if (target.result.os.tag == .emscripten) {
+        if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
+            const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
+            sokol_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+            cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+            cimgui_artifact.step.dependOn(&sokol_artifact.step);
+        }
+    }
+
     // Build bridge as static library
     const bridge_mod = b.addModule("mod_sokol_imgui_bridge", .{
         .root_source_file = b.path("src/bridge.zig"),
