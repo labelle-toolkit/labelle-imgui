@@ -1,9 +1,30 @@
 /// Sokol bridge for labelle-imgui — provides the extern C functions
 /// that the generic adapter calls, backed by sokol_imgui (simgui).
+const std = @import("std");
 const sokol = @import("sokol");
 const simgui = sokol.imgui;
 const sapp = sokol.app;
 const ig = @import("cimgui");
+
+// Zig 0.16 wasm32-emscripten workaround (labelle-imgui#10). This file
+// is a separate root module (built as a static library by
+// `bridges/sokol/build.zig`), so the panic-handler override applied
+// to the assembler's generated `main.zig` doesn't cover it. The
+// default `std.debug.panic` pulls in `std.Io.Threaded`, which on
+// wasm32-emscripten references the broken posix wrappers
+// (`childWaitPosix` / enum mismatches in `Threaded.zig:15315` /
+// `emscripten.zig:215`).
+//
+// Always-emit is fine: `std.debug.no_panic` is a tiny stub that
+// aborts on panic (acceptable trade-off — wasm panics already abort),
+// and `std.Io.failing` is unreached in normal flow. Desktop builds
+// continue to work; only the panic path is degraded.
+//
+// References:
+//   - ziglang/zig#31849 (issue)
+//   - ziglang/zig PR #31850 (upstream fix)
+pub const std_options_debug_io = std.Io.failing;
+pub const panic = std.debug.no_panic;
 
 export fn imgui_bridge_setup(dark_theme: bool) void {
     // Leave pipeline formats at `.DEFAULT` / `0` so sokol-gfx infers
