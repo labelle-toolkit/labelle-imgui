@@ -146,6 +146,30 @@ export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
         // Cancellation: no pos update — "forget this gesture" — just
         // release the synthesized left button so ImGui doesn't stick.
         .TOUCHES_CANCELLED => simgui.addTouchButtonEvent(0, false),
+        // Window focus events. Upstream `simgui_handle_event` (sokol_imgui.h
+        // ~line 3058) maps these to `simgui_add_focus_event(true/false)`,
+        // which forwards to `ImGuiIO::AddFocusEvent` to clear stale modifier
+        // state. Without these, alt/ctrl/cmd held when the window loses
+        // focus would stay "latched" on return — credit @cursor on PR #10.
+        .FOCUSED => simgui.addFocusEvent(true),
+        .UNFOCUSED => simgui.addFocusEvent(false),
+        // Mouse leave: park the cursor offscreen so ImGui's hover state
+        // clears (otherwise the last widget under the cursor before exit
+        // stays highlighted). `-FLT_MAX, -FLT_MAX` is ImGui core's own
+        // "cursor not over window" sentinel (see ImGui::NewFrame on
+        // `MousePosPrev`). Upstream sokol_imgui additionally releases all
+        // mouse buttons under __EMSCRIPTEN__ because the browser doesn't
+        // capture buttons across window boundaries; mirror that here for
+        // wasm targets. Credit @cursor on PR #10.
+        .MOUSE_LEAVE => {
+            simgui.addMousePosEvent(-std.math.floatMax(f32), -std.math.floatMax(f32));
+            if (@import("builtin").target.os.tag == .emscripten) {
+                var btn: i32 = 0;
+                while (btn < sapp.max_mousebuttons) : (btn += 1) {
+                    simgui.addMouseButtonEvent(btn, false);
+                }
+            }
+        },
         // Keyboard. `simgui_map_keycode` (the GLFW-keycode → ImGuiKey_*
         // translation table) is excluded by SOKOL_IMGUI_NO_SOKOL_APP, so
         // we port that table inline as `mapKeycode` below. ImGui asserts
