@@ -91,15 +91,158 @@ export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
             simgui.addMouseButtonEvent(@intFromEnum(e.mouse_button), false);
         },
         .MOUSE_SCROLL => simgui.addMouseWheelEvent(e.scroll_x, e.scroll_y),
-        // Keyboard input intentionally not forwarded. `simgui_map_keycode`
-        // (the GLFW-keycode → ImGuiKey_* translation table) is excluded
-        // by SOKOL_IMGUI_NO_SOKOL_APP, and ImGui asserts on un-mapped
-        // key ids (`IsNamedKeyOrMod`). Writing the table inline is doable
-        // but out of scope for #143's mouse-driven menus. KEY_DOWN /
-        // KEY_UP / CHAR fall through to the `else` and report unhandled.
+        // Keyboard. `simgui_map_keycode` (the GLFW-keycode → ImGuiKey_*
+        // translation table) is excluded by SOKOL_IMGUI_NO_SOKOL_APP, so
+        // we port that table inline as `mapKeycode` below. ImGui asserts
+        // on un-mapped key ids (`IsNamedKeyOrMod`); per upstream notes,
+        // it's safe to pass `ImGuiKey_None` (it's silently dropped), so
+        // we forward unconditionally.
+        .KEY_DOWN => {
+            updateModifiers(e.modifiers);
+            simgui.addKeyEvent(mapKeycode(e.key_code), true);
+        },
+        .KEY_UP => {
+            updateModifiers(e.modifiers);
+            simgui.addKeyEvent(mapKeycode(e.key_code), false);
+        },
+        .CHAR => {
+            // Mirror upstream: drop control chars and chars carrying
+            // Alt/Ctrl/Super modifiers (those should produce key events,
+            // not text input).
+            updateModifiers(e.modifiers);
+            const mod_mask: u32 = sapp.modifier_alt | sapp.modifier_ctrl | sapp.modifier_super;
+            if (e.char_code >= 32 and e.char_code != 127 and (e.modifiers & mod_mask) == 0) {
+                simgui.addInputCharacter(e.char_code);
+            }
+        },
         else => return false,
     }
     return true;
+}
+
+/// GLFW-keycode (sapp.Keycode) → ImGuiKey_* translation. Ported inline
+/// from `_simgui_map_keycode` in sokol_imgui.h (the upstream symbol is
+/// gated behind `!SOKOL_IMGUI_NO_SOKOL_APP`). Returns `ImGuiKey_None`
+/// for unmapped keys; ImGui accepts that as a no-op key event.
+fn mapKeycode(k: sapp.Keycode) i32 {
+    return switch (k) {
+        .SPACE => ig.ImGuiKey_Space,
+        .APOSTROPHE => ig.ImGuiKey_Apostrophe,
+        .COMMA => ig.ImGuiKey_Comma,
+        .MINUS => ig.ImGuiKey_Minus,
+        .PERIOD => ig.ImGuiKey_Period,
+        .SLASH => ig.ImGuiKey_Slash,
+        ._0 => ig.ImGuiKey_0,
+        ._1 => ig.ImGuiKey_1,
+        ._2 => ig.ImGuiKey_2,
+        ._3 => ig.ImGuiKey_3,
+        ._4 => ig.ImGuiKey_4,
+        ._5 => ig.ImGuiKey_5,
+        ._6 => ig.ImGuiKey_6,
+        ._7 => ig.ImGuiKey_7,
+        ._8 => ig.ImGuiKey_8,
+        ._9 => ig.ImGuiKey_9,
+        .SEMICOLON => ig.ImGuiKey_Semicolon,
+        .EQUAL => ig.ImGuiKey_Equal,
+        .A => ig.ImGuiKey_A,
+        .B => ig.ImGuiKey_B,
+        .C => ig.ImGuiKey_C,
+        .D => ig.ImGuiKey_D,
+        .E => ig.ImGuiKey_E,
+        .F => ig.ImGuiKey_F,
+        .G => ig.ImGuiKey_G,
+        .H => ig.ImGuiKey_H,
+        .I => ig.ImGuiKey_I,
+        .J => ig.ImGuiKey_J,
+        .K => ig.ImGuiKey_K,
+        .L => ig.ImGuiKey_L,
+        .M => ig.ImGuiKey_M,
+        .N => ig.ImGuiKey_N,
+        .O => ig.ImGuiKey_O,
+        .P => ig.ImGuiKey_P,
+        .Q => ig.ImGuiKey_Q,
+        .R => ig.ImGuiKey_R,
+        .S => ig.ImGuiKey_S,
+        .T => ig.ImGuiKey_T,
+        .U => ig.ImGuiKey_U,
+        .V => ig.ImGuiKey_V,
+        .W => ig.ImGuiKey_W,
+        .X => ig.ImGuiKey_X,
+        .Y => ig.ImGuiKey_Y,
+        .Z => ig.ImGuiKey_Z,
+        .LEFT_BRACKET => ig.ImGuiKey_LeftBracket,
+        .BACKSLASH => ig.ImGuiKey_Backslash,
+        .RIGHT_BRACKET => ig.ImGuiKey_RightBracket,
+        .GRAVE_ACCENT => ig.ImGuiKey_GraveAccent,
+        .ESCAPE => ig.ImGuiKey_Escape,
+        .ENTER => ig.ImGuiKey_Enter,
+        .TAB => ig.ImGuiKey_Tab,
+        .BACKSPACE => ig.ImGuiKey_Backspace,
+        .INSERT => ig.ImGuiKey_Insert,
+        .DELETE => ig.ImGuiKey_Delete,
+        .RIGHT => ig.ImGuiKey_RightArrow,
+        .LEFT => ig.ImGuiKey_LeftArrow,
+        .DOWN => ig.ImGuiKey_DownArrow,
+        .UP => ig.ImGuiKey_UpArrow,
+        .PAGE_UP => ig.ImGuiKey_PageUp,
+        .PAGE_DOWN => ig.ImGuiKey_PageDown,
+        .HOME => ig.ImGuiKey_Home,
+        .END => ig.ImGuiKey_End,
+        .CAPS_LOCK => ig.ImGuiKey_CapsLock,
+        .SCROLL_LOCK => ig.ImGuiKey_ScrollLock,
+        .NUM_LOCK => ig.ImGuiKey_NumLock,
+        .PRINT_SCREEN => ig.ImGuiKey_PrintScreen,
+        .PAUSE => ig.ImGuiKey_Pause,
+        .F1 => ig.ImGuiKey_F1,
+        .F2 => ig.ImGuiKey_F2,
+        .F3 => ig.ImGuiKey_F3,
+        .F4 => ig.ImGuiKey_F4,
+        .F5 => ig.ImGuiKey_F5,
+        .F6 => ig.ImGuiKey_F6,
+        .F7 => ig.ImGuiKey_F7,
+        .F8 => ig.ImGuiKey_F8,
+        .F9 => ig.ImGuiKey_F9,
+        .F10 => ig.ImGuiKey_F10,
+        .F11 => ig.ImGuiKey_F11,
+        .F12 => ig.ImGuiKey_F12,
+        .KP_0 => ig.ImGuiKey_Keypad0,
+        .KP_1 => ig.ImGuiKey_Keypad1,
+        .KP_2 => ig.ImGuiKey_Keypad2,
+        .KP_3 => ig.ImGuiKey_Keypad3,
+        .KP_4 => ig.ImGuiKey_Keypad4,
+        .KP_5 => ig.ImGuiKey_Keypad5,
+        .KP_6 => ig.ImGuiKey_Keypad6,
+        .KP_7 => ig.ImGuiKey_Keypad7,
+        .KP_8 => ig.ImGuiKey_Keypad8,
+        .KP_9 => ig.ImGuiKey_Keypad9,
+        .KP_DECIMAL => ig.ImGuiKey_KeypadDecimal,
+        .KP_DIVIDE => ig.ImGuiKey_KeypadDivide,
+        .KP_MULTIPLY => ig.ImGuiKey_KeypadMultiply,
+        .KP_SUBTRACT => ig.ImGuiKey_KeypadSubtract,
+        .KP_ADD => ig.ImGuiKey_KeypadAdd,
+        .KP_ENTER => ig.ImGuiKey_KeypadEnter,
+        .KP_EQUAL => ig.ImGuiKey_KeypadEqual,
+        .LEFT_SHIFT => ig.ImGuiKey_LeftShift,
+        .LEFT_CONTROL => ig.ImGuiKey_LeftCtrl,
+        .LEFT_ALT => ig.ImGuiKey_LeftAlt,
+        .LEFT_SUPER => ig.ImGuiKey_LeftSuper,
+        .RIGHT_SHIFT => ig.ImGuiKey_RightShift,
+        .RIGHT_CONTROL => ig.ImGuiKey_RightCtrl,
+        .RIGHT_ALT => ig.ImGuiKey_RightAlt,
+        .RIGHT_SUPER => ig.ImGuiKey_RightSuper,
+        .MENU => ig.ImGuiKey_Menu,
+        else => ig.ImGuiKey_None,
+    };
+}
+
+/// Mirror `_simgui_update_modifiers`: keep ImGui's modifier-key state
+/// in sync with sapp's modifier bitmask by emitting key events for the
+/// four ImGuiMod_* aliases. Called from KEY_DOWN/KEY_UP/CHAR.
+fn updateModifiers(mods: u32) void {
+    simgui.addKeyEvent(ig.ImGuiMod_Ctrl, (mods & sapp.modifier_ctrl) != 0);
+    simgui.addKeyEvent(ig.ImGuiMod_Shift, (mods & sapp.modifier_shift) != 0);
+    simgui.addKeyEvent(ig.ImGuiMod_Alt, (mods & sapp.modifier_alt) != 0);
+    simgui.addKeyEvent(ig.ImGuiMod_Super, (mods & sapp.modifier_super) != 0);
 }
 
 // Headless-preview input feed (labelle-assembler#143). The embedder
