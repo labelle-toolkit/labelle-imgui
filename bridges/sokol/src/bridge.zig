@@ -95,6 +95,36 @@ export fn imgui_bridge_handle_event(ev: ?*const sapp.Event) bool {
             simgui.addMouseButtonEvent(@intFromEnum(e.mouse_button), false);
         },
         .MOUSE_SCROLL => simgui.addMouseWheelEvent(e.scroll_x, e.scroll_y),
+        // Touch. Mirrors upstream `simgui_handle_event`'s TOUCHES_* cases
+        // (sokol_imgui.h ~line 3093) — translates touches to ImGui mouse
+        // events via the `addTouch*Event` wrappers, which tag the event as
+        // `ImGuiMouseSource_TouchScreen` so ImGui can render the cursor
+        // appropriately. This is the primary input path on Android (the
+        // sokol bridge's GLES3/NDK target). Without these cases all touch
+        // events fell through to `else => return false` and ImGui was
+        // non-interactive on mobile — credit @cursor on PR #10.
+        //
+        // Multi-touch limitation: ImGui IO is single-pointer, so we only
+        // forward `touches[0]`; multi-touch gestures (pinch, two-finger
+        // pan) would need higher-level handling outside this bridge.
+        // Guard `num_touches >= 1` defensively against malformed events.
+        .TOUCHES_BEGAN => {
+            if (e.num_touches < 1) return false;
+            simgui.addTouchPosEvent(e.touches[0].pos_x, e.touches[0].pos_y);
+            simgui.addTouchButtonEvent(0, true);
+        },
+        .TOUCHES_MOVED => {
+            if (e.num_touches < 1) return false;
+            simgui.addTouchPosEvent(e.touches[0].pos_x, e.touches[0].pos_y);
+        },
+        .TOUCHES_ENDED => {
+            if (e.num_touches < 1) return false;
+            simgui.addTouchPosEvent(e.touches[0].pos_x, e.touches[0].pos_y);
+            simgui.addTouchButtonEvent(0, false);
+        },
+        // Cancellation: no pos update — "forget this gesture" — just
+        // release the synthesized left button so ImGui doesn't stick.
+        .TOUCHES_CANCELLED => simgui.addTouchButtonEvent(0, false),
         // Keyboard. `simgui_map_keycode` (the GLFW-keycode → ImGuiKey_*
         // translation table) is excluded by SOKOL_IMGUI_NO_SOKOL_APP, so
         // we port that table inline as `mapKeycode` below. ImGui asserts
