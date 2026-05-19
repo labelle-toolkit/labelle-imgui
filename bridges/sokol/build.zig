@@ -36,13 +36,27 @@ pub fn build(b: *std.Build) void {
     // doesn't call them). Requires the `with_sokol_imgui_no_app` option
     // in sokol-zig's build.zig — see
     // labelle-tools/patches/sokol-zig-no-sokol-app.diff for the upstream patch.
-    const dep_sokol = b.dependency("sokol", .{
-        .target = target,
-        .optimize = optimize,
-        .with_sokol_imgui = true,
-        .with_sokol_imgui_no_app = true,
-        .dont_link_system_libs = is_android,
-    });
+    // Android skips `with_sokol_imgui_no_app` because (1) the device runs
+    // sokol_app natively via ANativeActivity — there's no headless preview
+    // path on-device — and (2) the sokol-zig copy fetched for Android
+    // hasn't been patched with that option, so passing it trips
+    // `error: invalid option: -Dwith_sokol_imgui_no_app`. See
+    // labelle-assembler#146.
+    const dep_sokol = if (is_android)
+        b.dependency("sokol", .{
+            .target = target,
+            .optimize = optimize,
+            .with_sokol_imgui = true,
+            .dont_link_system_libs = is_android,
+        })
+    else
+        b.dependency("sokol", .{
+            .target = target,
+            .optimize = optimize,
+            .with_sokol_imgui = true,
+            .with_sokol_imgui_no_app = true,
+            .dont_link_system_libs = is_android,
+        });
 
     // Inject the cimgui header search path into sokol's C library
     // so sokol_imgui can find the imgui headers.
@@ -104,11 +118,20 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Build bridge as static library
+    // Build bridge as static library. Android forces PIC end-to-end —
+    // libgame.so (the APK entrypoint) absorbs this archive, and ld.lld
+    // rejects non-PIC .o files inside a shared object. The bridge.zig
+    // TUs didn't surface relocation errors during initial verification
+    // because they don't take absolute references that R_AARCH64_ABS64
+    // would flag, but pinning it explicitly keeps every artifact on the
+    // Android path consistent (sokol_clib + cimgui_clib already do it
+    // above) and removes the implicit "Zig happens to emit PIC-friendly
+    // code here" assumption.
     const bridge_mod = b.addModule("mod_sokol_imgui_bridge", .{
         .root_source_file = b.path("src/bridge.zig"),
         .target = target,
         .optimize = optimize,
+        .pic = if (is_android) true else null,
     });
     bridge_mod.addImport("sokol", sokol_mod);
     bridge_mod.addImport("cimgui", dep_cimgui.module(cimgui_conf.module_name));
