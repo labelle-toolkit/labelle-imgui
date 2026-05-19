@@ -6,17 +6,21 @@ const sapp = sokol.app;
 const ig = @import("cimgui");
 
 export fn imgui_bridge_setup(dark_theme: bool) void {
-    // Pin pipeline formats so simgui's pipeline matches the headless
-    // preview render target (BGRA8 IOSurface w/ DEPTH_STENCIL, no MSAA).
-    // The sokol-gfx env defaults to these for both windowed and headless
-    // builds, but specifying them explicitly avoids relying on swapchain
-    // inference, which is brittle when sokol_app isn't running.
+    // Leave pipeline formats at `.DEFAULT` / `0` so sokol-gfx infers
+    // them from the environment passed to `sg.setup` per-backend. We
+    // briefly hardcoded `.color_format = .BGRA8` + `.depth_format =
+    // .DEPTH_STENCIL` + `.sample_count = 1` chasing the headless preview
+    // bug in labelle-assembler#142, but the real culprit was `sapp` returning
+    // bogus 1×1 dims when `SOKOL_IMGUI_NO_SOKOL_APP` is defined — fixed
+    // by the `imgui_bridge_set_dims` setter below. Inference is safe now:
+    // the Metal/IOSurface headless path supplies BGRA8 via `sg.setup`'s
+    // environment, windowed Metal/D3D11 backends default to BGRA8 too,
+    // and GL/GLES (Android) gets its native RGBA8 default. Hardcoding
+    // BGRA8 unconditionally produced a pipeline-vs-swapchain mismatch
+    // on GLES — credit @cursor for catching it on PR #10.
     simgui.setup(.{
         .ini_filename = null,
         .no_default_font = false,
-        .color_format = .BGRA8,
-        .depth_format = .DEPTH_STENCIL,
-        .sample_count = 1,
         .logger = .{ .func = sokol.log.func },
     });
     if (!dark_theme) {
