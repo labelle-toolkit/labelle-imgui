@@ -22,6 +22,17 @@
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
             .hash = "cimgui-0.1.0-44ClkXnYlwBKnil7TfCWL9z1Zo_2YJCJREzrpdFiGvA1",
         },
+        // emsdk is needed at WASM build time so we can plumb the sysroot
+        // include path through to the cimgui C++ compile (imgui.h pulls
+        // in <assert.h> et al). Mirrors the pin in
+        // `labelle-assembler/backends/sokol/build.zig.zon` — both deps
+        // must resolve to the same emsdk version. Lazy so non-WASM
+        // platforms don't fetch it. See labelle-cli#197.
+        .emsdk = .{
+            .url = "git+https://github.com/emscripten-core/emsdk#4.0.9",
+            .hash = "N-V-__8AAJl1DwBezhYo_VE6f53mPVm00R-Fk28NPW7P14EQ",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
