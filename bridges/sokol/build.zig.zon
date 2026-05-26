@@ -8,15 +8,20 @@
             // MUST match the labelle-imgui top-level `.sokol` pin and the
             // labelle-assembler `backends/sokol` pin exactly — mismatched
             // commits trigger duplicate-module errors at build time.
-            // Pinned to upstream floooh/sokol-zig; previously tracked the
-            // labelle-toolkit/sokol-zig fork's `feat/expose-cached-metal-
-            // drawable` branch, which is no longer needed now that Path A
-            // (offscreen IOSurface render target) is the canonical
-            // Metal-readback flow. See floooh/sokol#1510 (closed).
+            // Pinned to the labelle-toolkit fork of sokol-zig, branch
+            // `feat/with-sokol-imgui-no-app`, which adds the
+            // `with_sokol_imgui_no_app` build option on top of upstream
+            // floooh/sokol-zig @ 8b1a651 (see
+            // `patches/sokol-zig-no-sokol-app.diff` for the diff).
+            // The option defines `SOKOL_IMGUI_NO_SOKOL_APP` when
+            // compiling sokol_imgui.c so headless preview mode (no
+            // sokol_app, no NSWindow) can drive simgui via
+            // simgui_new_frame(width/height/dpi_scale/...). Default is
+            // false — fully backward compatible with upstream.
             // Bumping requires `zig fetch --save=sokol <url>` here AND
             // in `build.zig.zon` at the repo root.
-            .url = "https://github.com/floooh/sokol-zig/archive/8b1a651e6b8e76af3063a4094a5935432eb8afe2.tar.gz",
-            .hash = "sokol-0.1.0-pb1HK1lhNwCdIF2-WujvJqi1YoK7Qvgm14Ywmup5C6_q",
+            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/6b8609d022a095a757d66d8b00acd5c4cc80cdfc.tar.gz",
+            .hash = "sokol-0.1.0-pb1HK_FiNwBdV4BfvYXfUbDC1lhXcBeBOyy5zLCERSAa",
         },
         .cimgui = .{
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",

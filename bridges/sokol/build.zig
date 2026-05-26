@@ -28,36 +28,44 @@ pub fn build(b: *std.Build) void {
     // On Android, suppress automatic system-library linking — the final .so
     // already links android/log/GLESv3/EGL via its own root_module.
     //
-    // labelle-assembler#140 introduced `with_sokol_imgui_no_app = true` so
-    // sokol_imgui.h would compile with SOKOL_IMGUI_NO_SOKOL_APP defined,
-    // enabling the headless preview-mode path (no sokol_app, no NSWindow)
-    // where simgui_new_frame is fed width/height/dpi_scale explicitly.
+    // labelle-assembler#140: compile sokol_imgui with SOKOL_IMGUI_NO_SOKOL_APP
+    // defined so headless preview mode (no sokol_app, no NSWindow) can drive
+    // simgui by injecting width/height/dpi_scale into simgui_new_frame.
+    // Backward compatible — keyboard/mouse-cursor hooks that the flag
+    // disables are unused in the windowed path anyway (the gui adapter
+    // doesn't call them). Requires the `with_sokol_imgui_no_app` option
+    // in sokol-zig's build.zig — provided by the `labelle-toolkit/sokol-zig`
+    // fork branch `feat/with-sokol-imgui-no-app` that this repo pins (see
+    // `build.zig.zon` and `patches/sokol-zig-no-sokol-app.diff`).
     //
-    // PROBLEM: that option only exists on a *patched* sokol-zig. The pin
-    // here (floooh/sokol-zig @ 8b1a651) is stock upstream and doesn't
-    // recognise it; passing it fails with
-    //     error: invalid option: -Dwith_sokol_imgui_no_app
-    // The labelle-toolkit fork that previously carried the patch was
-    // retired (see top-level build.zig.zon comment), and nothing in this
-    // repo re-applies `patches/sokol-zig-no-sokol-app.diff` to a fresh
-    // fetch. Until a proper fork-or-PR exists, the option must be
-    // omitted on every target — not just Android.
+    // The option set here MUST stay symmetric with
+    // labelle-assembler `backends/sokol/build.zig` — Zig keys
+    // `b.dependency("sokol", .{...})` by its option struct, so a mismatch
+    // produces *two* separately compiled `sokol_clib` artifacts in the
+    // same binary, which manifests as `cimgui.h file not found` when only
+    // one of the two artifacts has the cimgui include path injected.
     //
-    // Consequence: SOKOL_IMGUI_NO_SOKOL_APP is no longer defined when
-    // sokol_imgui.c compiles, so the simgui_new_frame call in bridge.zig
-    // runs in the default (sokol_app-linked) mode. That's fine for every
-    // current consumer — `imgui_bridge_begin` already passes explicit
-    // width/height/dpi via `simgui.newFrame(.{...})` and falls back to
-    // sapp.width()/height() when no override is set. The only feature
-    // lost is the truly-headless preview path on sokol desktop, which
-    // labelle-assembler#140's editor preview-mode integration relies on.
-    // Tracked as a follow-up: revive the sokol-zig fork and re-pin.
-    const dep_sokol = b.dependency("sokol", .{
-        .target = target,
-        .optimize = optimize,
-        .with_sokol_imgui = true,
-        .dont_link_system_libs = is_android,
-    });
+    // Android skips `with_sokol_imgui_no_app` because the device runs
+    // sokol_app natively via ANativeActivity — there's no headless preview
+    // path on-device — and historically the Android sokol-zig fetch was a
+    // separate pin without the patch (`labelle-assembler#146`). Symmetric
+    // option sets per-target (this branch + `labelle_sokol`'s) keep the
+    // single-`_sg`-state invariant on every target.
+    const dep_sokol = if (is_android)
+        b.dependency("sokol", .{
+            .target = target,
+            .optimize = optimize,
+            .with_sokol_imgui = true,
+            .dont_link_system_libs = is_android,
+        })
+    else
+        b.dependency("sokol", .{
+            .target = target,
+            .optimize = optimize,
+            .with_sokol_imgui = true,
+            .with_sokol_imgui_no_app = true,
+            .dont_link_system_libs = is_android,
+        });
 
     // Inject the cimgui header search path into sokol's C library
     // so sokol_imgui can find the imgui headers.
