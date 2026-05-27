@@ -1,5 +1,5 @@
 From: labelle-toolkit
-Date: 2026-05-18
+Date: 2026-05-27
 Subject: [PATCH] sokol-zig: expose SOKOL_IMGUI_NO_SOKOL_APP via build option
 
 sokol_imgui.h already supports a SOKOL_IMGUI_NO_SOKOL_APP compile-time
@@ -8,7 +8,8 @@ width/height/dpi_scale/delta_time explicitly to simgui_new_frame, and
 the keyboard/mouse-cursor helpers that read from sokol_app become
 no-ops. This is exactly what a headless render-to-texture workflow
 needs (e.g. an editor preview that renders into a shared IOSurface
-without owning an NSWindow).
+without owning an NSWindow). It is also what a WASM host that owns
+the canvas + event loop needs.
 
 sokol-zig's build.zig exposes `with_sokol_imgui` for the bindings but
 doesn't currently forward `SOKOL_IMGUI_NO_SOKOL_APP`. This patch adds
@@ -16,12 +17,12 @@ a parallel `with_sokol_imgui_no_app` option that defines the flag when
 compiling sokol_imgui.c. Default is `false` — fully backward
 compatible; existing users see no change.
 
-Tested locally as part of labelle-assembler#140 (labelle-toolkit's
-no-window editor-preview work).
+Refreshed 2026-05-27 against sokol-zig cfbbd35c (line numbers shifted
+upstream; semantic change unchanged).
 
 --- a/build.zig
 +++ b/build.zig
-@@ -71,6 +71,7 @@
+@@ -70,6 +70,7 @@
      const opt_use_wayland = b.option(bool, "wayland", "Force Wayland (default: false, Linux only, not supported in main-line headers)") orelse false;
      const opt_use_egl = b.option(bool, "egl", "Force EGL (default: false, Linux only)") orelse false;
      const opt_with_sokol_imgui = b.option(bool, "with_sokol_imgui", "Add support for sokol_imgui.h bindings") orelse false;
@@ -29,7 +30,7 @@ no-window editor-preview work).
      const opt_with_tracing = b.option(bool, "with_tracing", "Add support for sokol_gfx tracing and debug UI") orelse false;
      const opt_dont_link_system_libs = b.option(bool, "dont_link_system_libs", "Do not link system libraries required by sokol (default: false)") orelse false;
      const opt_sokol_imgui_cprefix = b.option([]const u8, "sokol_imgui_cprefix", "Override Dear ImGui C bindings prefix for sokol_imgui.h (see SOKOL_IMGUI_CPREFIX)");
-@@ -93,6 +94,7 @@
+@@ -94,6 +95,7 @@
          .use_x11 = opt_use_x11,
          .use_egl = opt_use_egl,
          .with_sokol_imgui = opt_with_sokol_imgui or opt_with_tracing,
@@ -37,7 +38,7 @@ no-window editor-preview work).
          .with_tracing = opt_with_tracing,
          .sokol_imgui_cprefix = opt_sokol_imgui_cprefix,
          .cimgui_header_path = opt_cimgui_header_path,
-@@ -139,6 +141,7 @@
+@@ -140,6 +142,7 @@
      use_wayland: bool = false,
      emsdk: ?*Build.Dependency = null,
      with_sokol_imgui: bool = false,
@@ -45,7 +46,7 @@ no-window editor-preview work).
      with_tracing: bool = false,
      sokol_imgui_cprefix: ?[]const u8 = null,
      cimgui_header_path: ?[]const u8 = null,
-@@ -313,6 +316,9 @@
+@@ -314,6 +317,9 @@
      // optional Dear ImGui support, the called is required to also
      // add the cimgui include path to the returned compile step
      if (options.with_sokol_imgui) {
