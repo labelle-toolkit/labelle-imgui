@@ -1,6 +1,6 @@
 .{
     .name = .labelle_imgui,
-    .version = "0.6.2",
+    .version = "0.6.3",
     .fingerprint = 0x782948a16f8e87ea,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
