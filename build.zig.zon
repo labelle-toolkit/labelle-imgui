@@ -22,8 +22,8 @@
             // headless preview mode can drive simgui via
             // `simgui_new_frame(width/height/dpi_scale/...)`. Default is
             // false → backward compatible with upstream.
-            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/ba7363f01ad0438db10dba33424b6747ecc15cbf.tar.gz",
-            .hash = "sokol-0.1.0-pb1HKx2lNwB02YY5ZupcCFYC6eEQ0Guai3wOICvRHnyX",
+            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/2114f00976bf0b00bc1e1ced7a6d01d59f679e8c.tar.gz",
+            .hash = "sokol-0.1.0-pb1HKx2mNwBtmW1xhHMfc0uxkmcvjrVG_IUmSqTrwjjn",
         },
     },
     .paths = .{
