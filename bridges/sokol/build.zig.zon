@@ -20,8 +20,8 @@
             // false — fully backward compatible with upstream.
             // Bumping requires `zig fetch --save=sokol <url>` here AND
             // in `build.zig.zon` at the repo root.
-            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/ba7363f01ad0438db10dba33424b6747ecc15cbf.tar.gz",
-            .hash = "sokol-0.1.0-pb1HKx2lNwB02YY5ZupcCFYC6eEQ0Guai3wOICvRHnyX",
+            .url = "https://github.com/labelle-toolkit/sokol-zig/archive/2114f00976bf0b00bc1e1ced7a6d01d59f679e8c.tar.gz",
+            .hash = "sokol-0.1.0-pb1HKx2mNwBtmW1xhHMfc0uxkmcvjrVG_IUmSqTrwjjn",
         },
         .cimgui = .{
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
