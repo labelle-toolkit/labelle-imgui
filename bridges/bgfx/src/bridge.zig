@@ -246,21 +246,26 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
 // (it scales GLFW's logical cursor pos to framebuffer pixels). No DPI
 // conversion happens here.
 //
-// `igGetIO()` is valid only after `imgui_bridge_setup` created the context;
-// the embedder only calls these from inside its frame loop, which always
-// runs after setup, so no null guard is needed (matches the render exports).
+// These are driven by the OS/backend event loop (GLFW callbacks on desktop,
+// NDK AInputEvent on Android), which can fire during early init (before
+// `imgui_bridge_setup` creates the context) or late shutdown (after
+// `imgui_bridge_shutdown` destroys it). `igGetIO()` with no active context is
+// UB, so each guards on `igGetCurrentContext()`.
 
 export fn imgui_bridge_mouse_pos(x: f32, y: f32) void {
+    if (ig.igGetCurrentContext() == null) return;
     const io = ig.igGetIO();
     ig.ImGuiIO_AddMousePosEvent(io, x, y);
 }
 
 export fn imgui_bridge_mouse_button(button: i32, down: bool) void {
+    if (ig.igGetCurrentContext() == null) return;
     const io = ig.igGetIO();
     ig.ImGuiIO_AddMouseButtonEvent(io, button, down);
 }
 
 export fn imgui_bridge_mouse_wheel(wheel_x: f32, wheel_y: f32) void {
+    if (ig.igGetCurrentContext() == null) return;
     const io = ig.igGetIO();
     ig.ImGuiIO_AddMouseWheelEvent(io, wheel_x, wheel_y);
 }
