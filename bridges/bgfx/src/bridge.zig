@@ -64,10 +64,13 @@ var sprite_program: bgfx.ProgramHandle = .{ .idx = INVALID };
 var s_tex_uniform: bgfx.UniformHandle = .{ .idx = INVALID };
 var vertex_layout: bgfx.VertexLayout = undefined;
 var initialized: bool = false;
-/// Set when the active renderer has no embedded shader variant (D3D/etc.).
-/// Distinct from "not initialized yet": this is a permanent give-up so the
-/// lazy retry in `imgui_bridge_begin` doesn't re-log the error every frame.
-var render_unsupported: bool = false;
+/// Permanent give-up latch: set when render init can't succeed on a later
+/// frame — an unsupported renderer (no embedded shader variant, D3D/etc.) OR
+/// a hard shader/program creation failure on a supported renderer. Distinct
+/// from "not initialized yet" (`.Noop`, bgfx not up): that retries. Without
+/// this latch the per-frame lazy retry in `imgui_bridge_begin` would
+/// re-attempt (and re-log) a doomed init every frame, forever.
+var render_disabled: bool = false;
 
 /// Alpha-blend state (matches the bgfx gfx backend's STATE_BLEND_ALPHA).
 /// BGFX_STATE_BLEND_FUNC_SEPARATE(srcRGB,dstRGB,srcA,dstA) =
@@ -111,7 +114,7 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
 /// the same embedded sprite shaders the bgfx gfx backend uses (Metal /
 /// SPIR-V / GLSL); their vertex layout is exactly PosTexColorVertex.
 fn ensureRenderResources() void {
-    if (initialized or render_unsupported) return;
+    if (initialized or render_disabled) return;
 
     // Select the precompiled shader variant by renderer. The embedded blobs
     // cover Metal (.mtl), Vulkan (SPIR-V), and GLSL. GLSL is also accepted by
@@ -142,7 +145,7 @@ fn ensureRenderResources() void {
                     "imgui rendering disabled (D3D parity is a follow-up, see bridge.zig)",
                 .{renderer},
             );
-            render_unsupported = true;
+            render_disabled = true;
             return;
         },
     };
@@ -155,6 +158,11 @@ fn ensureRenderResources() void {
         // leak bgfx shader handles.
         if (isValid(vs.idx)) bgfx.destroyShader(vs);
         if (isValid(fs.idx)) bgfx.destroyShader(fs);
+        // Latch: the renderer is real (not `.Noop`) and the embedded
+        // bytecode is fixed, so this won't succeed on a later frame — without
+        // the latch the per-frame retry in `begin` would re-attempt (and
+        // re-log) forever.
+        render_disabled = true;
         return;
     }
     // createProgram(.., true) takes ownership of vs/fs and destroys them when
@@ -165,6 +173,7 @@ fn ensureRenderResources() void {
         std.log.err("imgui-bgfx: failed to create program", .{});
         bgfx.destroyShader(vs);
         bgfx.destroyShader(fs);
+        render_disabled = true; // permanent failure — don't retry forever
         return;
     }
 
@@ -195,7 +204,7 @@ export fn imgui_bridge_shutdown() void {
     }
     destroyAllTextures();
     initialized = false;
-    render_unsupported = false;
+    render_disabled = false;
     ig.igDestroyContext(null);
 }
 
@@ -217,7 +226,7 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
 export fn imgui_bridge_begin() void {
     // Lazy retry: if `setup` ran before bgfx.init (renderer was `.Noop`),
     // the program wasn't built yet. Idempotent once `initialized`, and a
-    // no-op once `render_unsupported`, so this is cheap every frame.
+    // no-op once `render_disabled`, so this is cheap every frame.
     ensureRenderResources();
 
     const io = ig.igGetIO();
@@ -537,19 +546,33 @@ fn createTexture(tex: *ig.ImTextureData) void {
 
 fn updateTexturePixels(tex: *ig.ImTextureData) void {
     // We didn't request partial updates with a dynamic texture, so the
-    // simplest correct path is to recreate: destroy the old handle and make
-    // a fresh full texture from the current pixels. Font-atlas updates are
-    // rare (DPI/scale change, glyph reload), so the cost is negligible for
-    // the MVP. A dynamic-texture + sub-rect updateTexture2D path is a
-    // possible optimization follow-up.
-    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| {
-        if (isValid(imgui_textures[slot].idx)) {
-            bgfx.destroyTexture(imgui_textures[slot]);
-            imgui_textures[slot] = .{ .idx = INVALID };
+    // simplest correct path is to recreate the full texture from the current
+    // pixels. Font-atlas updates are rare (DPI/scale change, glyph reload),
+    // so the cost is negligible for the MVP. A dynamic-texture + sub-rect
+    // updateTexture2D path is a possible optimization follow-up.
+    //
+    // CREATE FIRST, retire the old texture only on success. `createTexture`
+    // resolves a *different* free slot and writes a fresh TexID on success,
+    // and leaves TexID/status UNTOUCHED on failure — so a transient
+    // createTexture2D failure can't blank the atlas (the old texture stays
+    // bound). Destroying the old handle up front would lose it on failure.
+    const old_slot = texIdToSlot(ig.ImTextureData_GetTexID(tex));
+    const old_texid = ig.ImTextureData_GetTexID(tex);
+
+    createTexture(tex);
+
+    // A fresh TexID + OK status means the replacement is live; retire the old.
+    if (tex.*.Status == ig.ImTextureStatus_OK and
+        ig.ImTextureData_GetTexID(tex) != old_texid)
+    {
+        if (old_slot) |slot| {
+            if (isValid(imgui_textures[slot].idx)) {
+                bgfx.destroyTexture(imgui_textures[slot]);
+                imgui_textures[slot] = .{ .idx = INVALID };
+            }
         }
     }
-    // createTexture re-resolves a free slot and writes a fresh TexID.
-    createTexture(tex);
+    // else: create failed — old texture + slot + TexID left intact.
 }
 
 fn destroyTexture(tex: *ig.ImTextureData) void {
