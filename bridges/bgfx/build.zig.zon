@@ -1,0 +1,31 @@
+.{
+    .name = .bgfx_imgui_bridge,
+    .version = "0.1.0",
+    .fingerprint = 0x58b105678a9e415c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // MUST match the labelle-imgui top-level `.cimgui` pin, the sokol
+        // bridge's `.cimgui` pin, AND the labelle-assembler backend pins
+        // exactly — Zig keys dependencies by their resolved hash, so a
+        // mismatched commit produces *two* separately compiled cimgui
+        // artifacts in the same binary (duplicate-module / missing-symbol
+        // errors at link time).
+        .cimgui = .{
+            .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
+            .hash = "cimgui-0.1.0-44ClkXnYlwBKnil7TfCWL9z1Zo_2YJCJREzrpdFiGvA1",
+        },
+        // MUST match the labelle-assembler `backends/bgfx/build.zig.zon`
+        // zbgfx pin exactly — a mismatched zbgfx triggers duplicate-module
+        // errors (the backend and this bridge both pull zbgfx into the same
+        // game binary; they must resolve to one module).
+        .zbgfx = .{
+            .url = "https://codeberg.org/cyberegoorg/zbgfx/archive/8f01ea0ab6.tar.gz",
+            .hash = "zbgfx-0.12.0-Sm4IxEuHywb45XqoIhv3iEOxKXc01aKNNVjI63FHvqFw",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
