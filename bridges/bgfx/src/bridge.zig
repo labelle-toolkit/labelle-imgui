@@ -69,6 +69,27 @@ var sprite_program: bgfx.ProgramHandle = .{ .idx = INVALID };
 var s_tex_uniform: bgfx.UniformHandle = .{ .idx = INVALID };
 var vertex_layout: bgfx.VertexLayout = undefined;
 var initialized: bool = false;
+/// Monotonic-clock timestamp (ns) of the previous `imgui_bridge_begin`,
+/// used to derive the real per-frame `io.DeltaTime` (and hence
+/// `io.Framerate`). Zero until the first frame establishes a baseline.
+var last_frame_ns: i128 = 0;
+
+// `std.time.nanoTimestamp` / `std.time.Instant` were removed in Zig 0.16;
+// libc `clock_gettime(CLOCK_MONOTONIC)` is the portable replacement (same
+// approach the engine uses in `screenshot_request.nowNs`). Only the
+// constants like `std.time.ns_per_s` survive.
+const builtin = @import("builtin");
+const Timespec = extern struct { sec: i64, nsec: i64 };
+extern "c" fn clock_gettime(clk: c_int, tp: *Timespec) c_int;
+fn nowNs() i128 {
+    const clk_id: c_int = switch (builtin.os.tag) {
+        .macos, .ios, .watchos, .tvos => 6, // _CLOCK_MONOTONIC
+        else => 1, // CLOCK_MONOTONIC (Linux/Android)
+    };
+    var ts: Timespec = .{ .sec = 0, .nsec = 0 };
+    if (clock_gettime(clk_id, &ts) != 0) return 0;
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
 /// Permanent give-up latch: set when render init can't succeed on a later
 /// frame — an unsupported renderer (no embedded shader variant, D3D/etc.) OR
 /// a hard shader/program creation failure on a supported renderer. Distinct
@@ -298,8 +319,28 @@ export fn imgui_bridge_begin() void {
     // We render directly in framebuffer pixels (coords already physical), so
     // the framebuffer scale is 1:1 — DisplaySize is the physical size.
     io.*.DisplayFramebufferScale = .{ .x = 1.0, .y = 1.0 };
-    // ImGui asserts DeltaTime > 0 past the first frame.
-    io.*.DeltaTime = 1.0 / 60.0;
+    // Feed imgui the REAL frame period (measured between consecutive
+    // `begin` calls with a monotonic clock) so `io.Framerate` reflects the
+    // actual present rate. Previously this was hardcoded to 1/60, which
+    // pinned every imgui FPS readout to 60 on bgfx regardless of the true
+    // rate (e.g. a 100 Hz vsync'd window, or an uncapped one) — making an
+    // in-game FPS graph and the vsync toggle's effect invisible. The span
+    // between `begin` calls includes the previous frame's present wait
+    // (`bgfx.frame` in endDrawing), so it's the true frame period. Clamped
+    // to (0, 1] s: ImGui asserts DeltaTime > 0, and a huge first/stall
+    // delta would otherwise spike animations.
+    var dt: f32 = 1.0 / 60.0;
+    const now_ns = nowNs();
+    if (last_frame_ns != 0) {
+        const elapsed = now_ns - last_frame_ns;
+        if (elapsed > 0) {
+            dt = @floatCast(@as(f64, @floatFromInt(elapsed)) / @as(f64, std.time.ns_per_s));
+        }
+    }
+    last_frame_ns = now_ns;
+    if (dt <= 0) dt = 1.0 / 60.0;
+    if (dt > 1.0) dt = 1.0;
+    io.*.DeltaTime = dt;
 
     ig.igNewFrame();
 }
