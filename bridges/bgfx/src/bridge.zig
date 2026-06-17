@@ -25,10 +25,15 @@
 /// `TextureHandle.idx` in the texture's `TexID`. The font atlas is created
 /// this way on the first frame — no explicit `GetTexDataAsRGBA32` call.
 ///
-/// INPUT forwarding (mouse/keyboard → `io.AddMousePosEvent` etc.) is NOT
-/// implemented here: it needs the bgfx backend's GLFW/NDK event loop, which
-/// is a separate wiring task. See the repo's bridge docs / follow-up. The
-/// MVP renders the imgui window correctly but is non-interactive.
+/// INPUT forwarding (mouse → `io.AddMousePosEvent` etc.) is implemented via
+/// the `imgui_bridge_mouse_pos` / `imgui_bridge_mouse_button` /
+/// `imgui_bridge_mouse_wheel` externs at the bottom of this file. The
+/// embedding backend (labelle-assembler's bgfx GLFW desktop / NDK Android
+/// input layer) drives its per-frame mouse/touch state into them, matching
+/// the contract the sokol bridge already exposes (and the headless-preview
+/// input feed in labelle-assembler). Keyboard / text-input forwarding is a
+/// follow-up — FP's UI is mouse/touch driven, so mouse pos + click + wheel
+/// is the must-have that makes the overlay interactive.
 const std = @import("std");
 const bgfx = @import("zbgfx").bgfx;
 const shaders_data = @import("shaders.zig");
@@ -221,6 +226,48 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
     _ = dpi;
     override_w = w;
     override_h = h;
+}
+
+// ── Input feed (mouse / touch) ─────────────────────────────────────────
+//
+// Thin wrappers that push the embedder's per-frame mouse/touch state into
+// Dear ImGui's input queue. The bgfx backend (labelle-assembler) drives
+// these from its single per-frame input pump (`backends/bgfx/src/input.zig`
+// `newFrame`): GLFW cursor/buttons/scroll on desktop, the NDK touch pointer
+// mapped onto mouse-button-0 on Android. The names + signatures match the
+// sokol bridge's `imgui_bridge_mouse_pos` / `imgui_bridge_mouse_button`
+// exactly so the assembler's codegen can emit one extern set for both
+// backends (and so the headless-preview input feed keeps working).
+//
+// Coordinates are in the SAME physical-framebuffer pixel space the bridge
+// renders in (`imgui_bridge_begin` sets `DisplaySize` to the framebuffer
+// size with a 1:1 `DisplayFramebufferScale`), so the embedder must forward
+// framebuffer-pixel coordinates — which the bgfx input layer already does
+// (it scales GLFW's logical cursor pos to framebuffer pixels). No DPI
+// conversion happens here.
+//
+// These are driven by the OS/backend event loop (GLFW callbacks on desktop,
+// NDK AInputEvent on Android), which can fire during early init (before
+// `imgui_bridge_setup` creates the context) or late shutdown (after
+// `imgui_bridge_shutdown` destroys it). `igGetIO()` with no active context is
+// UB, so each guards on `igGetCurrentContext()`.
+
+export fn imgui_bridge_mouse_pos(x: f32, y: f32) void {
+    if (ig.igGetCurrentContext() == null) return;
+    const io = ig.igGetIO();
+    ig.ImGuiIO_AddMousePosEvent(io, x, y);
+}
+
+export fn imgui_bridge_mouse_button(button: i32, down: bool) void {
+    if (ig.igGetCurrentContext() == null) return;
+    const io = ig.igGetIO();
+    ig.ImGuiIO_AddMouseButtonEvent(io, button, down);
+}
+
+export fn imgui_bridge_mouse_wheel(wheel_x: f32, wheel_y: f32) void {
+    if (ig.igGetCurrentContext() == null) return;
+    const io = ig.igGetIO();
+    ig.ImGuiIO_AddMouseWheelEvent(io, wheel_x, wheel_y);
 }
 
 export fn imgui_bridge_begin() void {
