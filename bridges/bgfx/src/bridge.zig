@@ -355,13 +355,18 @@ export fn imgui_bridge_begin() void {
     // delta would otherwise spike animations.
     var dt: f32 = 1.0 / 60.0;
     const now_ns = nowNs();
-    if (last_frame_ns != 0) {
-        const elapsed = now_ns - last_frame_ns;
-        if (elapsed > 0) {
-            dt = @floatCast(@as(f64, @floatFromInt(elapsed)) / @as(f64, std.time.ns_per_s));
+    if (now_ns != 0) {
+        if (last_frame_ns != 0) {
+            const elapsed = now_ns - last_frame_ns;
+            if (elapsed > 0) {
+                dt = @floatCast(@as(f64, @floatFromInt(elapsed)) / @as(f64, std.time.ns_per_s));
+            }
         }
+        // Only advance the baseline on a good reading — a transient clock
+        // failure (nowNs == 0) must not zero it and lose the baseline
+        // (Cursor Bugbot, low sev).
+        last_frame_ns = now_ns;
     }
-    last_frame_ns = now_ns;
     if (dt <= 0) dt = 1.0 / 60.0;
     if (dt > 1.0) dt = 1.0;
     io.*.DeltaTime = dt;
