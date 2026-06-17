@@ -64,6 +64,10 @@ var sprite_program: bgfx.ProgramHandle = .{ .idx = INVALID };
 var s_tex_uniform: bgfx.UniformHandle = .{ .idx = INVALID };
 var vertex_layout: bgfx.VertexLayout = undefined;
 var initialized: bool = false;
+/// Set when the active renderer has no embedded shader variant (D3D/etc.).
+/// Distinct from "not initialized yet": this is a permanent give-up so the
+/// lazy retry in `imgui_bridge_begin` doesn't re-log the error every frame.
+var render_unsupported: bool = false;
 
 /// Alpha-blend state (matches the bgfx gfx backend's STATE_BLEND_ALPHA).
 /// BGFX_STATE_BLEND_FUNC_SEPARATE(srcRGB,dstRGB,srcA,dstA) =
@@ -107,7 +111,7 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
 /// the same embedded sprite shaders the bgfx gfx backend uses (Metal /
 /// SPIR-V / GLSL); their vertex layout is exactly PosTexColorVertex.
 fn ensureRenderResources() void {
-    if (initialized) return;
+    if (initialized or render_unsupported) return;
 
     // Select the precompiled shader variant by renderer. The embedded blobs
     // cover Metal (.mtl), Vulkan (SPIR-V), and GLSL. GLSL is also accepted by
@@ -125,12 +129,20 @@ fn ensureRenderResources() void {
         .Metal => .{ &shaders_data.vs_sprite_mtl, &shaders_data.fs_sprite_mtl },
         .Vulkan => .{ &shaders_data.vs_sprite_spv, &shaders_data.fs_sprite_spv },
         .OpenGL, .OpenGLES => .{ &shaders_data.vs_sprite_glsl, &shaders_data.fs_sprite_glsl },
+        // `.Noop` means bgfx isn't initialized yet (getRendererType before
+        // bgfx.init). NOT an error — return silently so the lazy retry in
+        // `imgui_bridge_begin` picks it up once the window backend has run
+        // bgfx.init. This is the fix for "render init never retried": if
+        // `setup` happened to run before bgfx.init, we'd otherwise never
+        // build the program.
+        .Noop => return,
         else => {
             std.log.err(
                 "imgui-bgfx: renderer {} has no embedded shader variant; " ++
                     "imgui rendering disabled (D3D parity is a follow-up, see bridge.zig)",
                 .{renderer},
             );
+            render_unsupported = true;
             return;
         },
     };
@@ -183,6 +195,7 @@ export fn imgui_bridge_shutdown() void {
     }
     destroyAllTextures();
     initialized = false;
+    render_unsupported = false;
     ig.igDestroyContext(null);
 }
 
@@ -202,6 +215,11 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
 }
 
 export fn imgui_bridge_begin() void {
+    // Lazy retry: if `setup` ran before bgfx.init (renderer was `.Noop`),
+    // the program wasn't built yet. Idempotent once `initialized`, and a
+    // no-op once `render_unsupported`, so this is cheap every frame.
+    ensureRenderResources();
+
     const io = ig.igGetIO();
 
     var w = override_w;
