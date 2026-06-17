@@ -74,21 +74,42 @@ var initialized: bool = false;
 /// `io.Framerate`). Zero until the first frame establishes a baseline.
 var last_frame_ns: i128 = 0;
 
-// `std.time.nanoTimestamp` / `std.time.Instant` were removed in Zig 0.16;
-// libc `clock_gettime(CLOCK_MONOTONIC)` is the portable replacement (same
-// approach the engine uses in `screenshot_request.nowNs`). Only the
-// constants like `std.time.ns_per_s` survive.
+// `std.time.nanoTimestamp` / `std.time.Instant` / `std.time.Timer` were all
+// removed in Zig 0.16, so roll a small cross-platform monotonic clock.
+// Each OS's externs live INSIDE its `comptime`-folded `switch` arm, so the
+// other platform's symbols are never referenced — `clock_gettime` (libc)
+// would otherwise fail to link a Windows game exe (Cursor Bugbot flagged
+// this; `std.time.Timer` isn't available here to replace it). Only the
+// `std.time.ns_per_s` constant survives the std.time strip.
 const builtin = @import("builtin");
-const Timespec = extern struct { sec: i64, nsec: i64 };
-extern "c" fn clock_gettime(clk: c_int, tp: *Timespec) c_int;
 fn nowNs() i128 {
-    const clk_id: c_int = switch (builtin.os.tag) {
-        .macos, .ios, .watchos, .tvos => 6, // _CLOCK_MONOTONIC
-        else => 1, // CLOCK_MONOTONIC (Linux/Android)
-    };
-    var ts: Timespec = .{ .sec = 0, .nsec = 0 };
-    if (clock_gettime(clk_id, &ts) != 0) return 0;
-    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+    switch (builtin.os.tag) {
+        .windows => {
+            const k32 = struct {
+                extern "kernel32" fn QueryPerformanceCounter(c: *u64) callconv(.winapi) c_int;
+                extern "kernel32" fn QueryPerformanceFrequency(f: *u64) callconv(.winapi) c_int;
+            };
+            var counter: u64 = 0;
+            var freq: u64 = 0;
+            _ = k32.QueryPerformanceCounter(&counter);
+            _ = k32.QueryPerformanceFrequency(&freq);
+            if (freq == 0) return 0;
+            return @divTrunc(@as(i128, counter) * std.time.ns_per_s, @as(i128, freq));
+        },
+        else => {
+            const Timespec = extern struct { sec: i64, nsec: i64 };
+            const libc = struct {
+                extern "c" fn clock_gettime(clk: c_int, tp: *Timespec) c_int;
+            };
+            const clk_id: c_int = switch (builtin.os.tag) {
+                .macos, .ios, .watchos, .tvos => 6, // _CLOCK_MONOTONIC
+                else => 1, // CLOCK_MONOTONIC (Linux/Android)
+            };
+            var ts: Timespec = .{ .sec = 0, .nsec = 0 };
+            if (libc.clock_gettime(clk_id, &ts) != 0) return 0;
+            return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+        },
+    }
 }
 /// Permanent give-up latch: set when render init can't succeed on a later
 /// frame — an unsupported renderer (no embedded shader variant, D3D/etc.) OR
@@ -231,6 +252,9 @@ export fn imgui_bridge_shutdown() void {
     destroyAllTextures();
     initialized = false;
     render_disabled = false;
+    // Reset the frame-time baseline so a later re-init doesn't compute one
+    // giant dt from the pre-shutdown timestamp (Cursor Bugbot, low sev).
+    last_frame_ns = 0;
     ig.igDestroyContext(null);
 }
 
