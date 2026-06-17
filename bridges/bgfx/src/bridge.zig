@@ -109,26 +109,50 @@ export fn imgui_bridge_setup(dark_theme: bool) void {
 fn ensureRenderResources() void {
     if (initialized) return;
 
-    const vs_data: []const u8 = switch (bgfx.getRendererType()) {
-        .Metal => &shaders_data.vs_sprite_mtl,
-        .Vulkan => &shaders_data.vs_sprite_spv,
-        else => &shaders_data.vs_sprite_glsl,
-    };
-    const fs_data: []const u8 = switch (bgfx.getRendererType()) {
-        .Metal => &shaders_data.fs_sprite_mtl,
-        .Vulkan => &shaders_data.fs_sprite_spv,
-        else => &shaders_data.fs_sprite_glsl,
+    // Select the precompiled shader variant by renderer. The embedded blobs
+    // cover Metal (.mtl), Vulkan (SPIR-V), and GLSL. GLSL is also accepted by
+    // OpenGL and OpenGL ES (the bridge's real desktop/Android targets), so
+    // those fall through to the GLSL case.
+    //
+    // Renderers the embedded shaders do NOT cover (Direct3D 9/11/12, AGC,
+    // GNM, NVN, WebGPU, Noop) would be fed incompatible bytecode by
+    // createShader → an invalid program and silently-broken imgui. So we fail
+    // LOUDLY and skip imgui rendering instead. D3D shader parity with the
+    // bgfx backend's own shaders.zig (which has the same gap — no D3D
+    // bytecode) is a separate follow-up; do not paper over it here.
+    const renderer = bgfx.getRendererType();
+    const vs_data: []const u8, const fs_data: []const u8 = switch (renderer) {
+        .Metal => .{ &shaders_data.vs_sprite_mtl, &shaders_data.fs_sprite_mtl },
+        .Vulkan => .{ &shaders_data.vs_sprite_spv, &shaders_data.fs_sprite_spv },
+        .OpenGL, .OpenGLES => .{ &shaders_data.vs_sprite_glsl, &shaders_data.fs_sprite_glsl },
+        else => {
+            std.log.err(
+                "imgui-bgfx: renderer {} has no embedded shader variant; " ++
+                    "imgui rendering disabled (D3D parity is a follow-up, see bridge.zig)",
+                .{renderer},
+            );
+            return;
+        },
     };
 
     const vs = bgfx.createShader(bgfx.makeRef(vs_data.ptr, @intCast(vs_data.len)));
     const fs = bgfx.createShader(bgfx.makeRef(fs_data.ptr, @intCast(fs_data.len)));
     if (!isValid(vs.idx) or !isValid(fs.idx)) {
         std.log.err("imgui-bgfx: failed to create shaders", .{});
+        // Destroy whichever handle succeeded so repeated init attempts don't
+        // leak bgfx shader handles.
+        if (isValid(vs.idx)) bgfx.destroyShader(vs);
+        if (isValid(fs.idx)) bgfx.destroyShader(fs);
         return;
     }
+    // createProgram(.., true) takes ownership of vs/fs and destroys them when
+    // the program is destroyed — but ONLY if it succeeds. On failure the
+    // handles are still ours to clean up.
     sprite_program = bgfx.createProgram(vs, fs, true);
     if (!isValid(sprite_program.idx)) {
         std.log.err("imgui-bgfx: failed to create program", .{});
+        bgfx.destroyShader(vs);
+        bgfx.destroyShader(fs);
         return;
     }
 
@@ -258,7 +282,7 @@ export fn imgui_bridge_end() void {
 
     var li: usize = 0;
     while (li < cmd_lists_count) : (li += 1) {
-        renderDrawList(cmd_lists[li], disp_x, disp_y, fb_scale_x, fb_scale_y, fb_h);
+        renderDrawList(cmd_lists[li], disp_x, disp_y, fb_scale_x, fb_scale_y, fb_w, fb_h);
     }
 }
 
@@ -268,21 +292,36 @@ fn renderDrawList(
     disp_y: f32,
     fb_scale_x: f32,
     fb_scale_y: f32,
+    fb_w: u16,
     fb_h: u16,
 ) void {
     const vtx_count: u32 = @intCast(cl.*.VtxBuffer.Size);
     const idx_count: u32 = @intCast(cl.*.IdxBuffer.Size);
     if (vtx_count == 0 or idx_count == 0) return;
 
+    // Transient index-buffer width flag. NOTE on the review thread that flagged
+    // this: this zbgfx binding's parameter is `_index32` (bgfx >= the 1.92-era
+    // rename), NOT the older `_index16` — i.e. its meaning is INVERTED. The
+    // bgfx C header documents it as: "Set to `true` if input indices are
+    // 32-bit." cimgui's imconfig.h leaves ImDrawIdx as the default
+    // `unsigned short` (verified: @sizeOf(ig.ImDrawIdx) == 2), so our indices
+    // are 16-bit and the correct flag is `false`. Passing `true` here requests
+    // a 32-bit buffer and bgfx reads our 16-bit data two indices at a time →
+    // garbled/blank geometry (verified empirically: `true` blanks the overlay,
+    // `false` renders correctly). The flag is derived from @sizeOf so it stays
+    // correct if cimgui is ever rebuilt with 32-bit indices.
+    comptime std.debug.assert(@sizeOf(ig.ImDrawIdx) == 2 or @sizeOf(ig.ImDrawIdx) == 4);
+    const index32: bool = @sizeOf(ig.ImDrawIdx) == 4;
+
     // bgfx requires the transient buffers fit the frame's transient budget;
     // skip the list if either can't be allocated (rare; degrades gracefully).
     if (bgfx.getAvailTransientVertexBuffer(vtx_count, &vertex_layout) < vtx_count) return;
-    if (bgfx.getAvailTransientIndexBuffer(idx_count, false) < idx_count) return;
+    if (bgfx.getAvailTransientIndexBuffer(idx_count, index32) < idx_count) return;
 
     var tvb: bgfx.TransientVertexBuffer = undefined;
     var tib: bgfx.TransientIndexBuffer = undefined;
     bgfx.allocTransientVertexBuffer(&tvb, vtx_count, &vertex_layout);
-    bgfx.allocTransientIndexBuffer(&tib, idx_count, false); // 16-bit indices
+    bgfx.allocTransientIndexBuffer(&tib, idx_count, index32); // matches ImDrawIdx width
 
     // ImDrawVert is byte-identical to PosTexColorVertex (20 bytes), so a raw
     // copy is correct — no per-vertex conversion.
@@ -310,19 +349,23 @@ fn renderDrawList(
         if (cmd.*.ElemCount == 0) continue;
 
         // Scissor from clip rect, offset by DisplayPos and scaled to the
-        // framebuffer. Clamp to >= 0 (clip rects can extend slightly past
-        // the edges).
-        const clip_x = (cmd.*.ClipRect.x - disp_x) * fb_scale_x;
-        const clip_y = (cmd.*.ClipRect.y - disp_y) * fb_scale_y;
-        const clip_z = (cmd.*.ClipRect.z - disp_x) * fb_scale_x;
-        const clip_w = (cmd.*.ClipRect.w - disp_y) * fb_scale_y;
+        // framebuffer. Clip rects can be negative (partially off-screen
+        // windows) or extend past the framebuffer, so clamp each corner into
+        // [0, fb_dim] BEFORE converting to int. Doing the @intFromFloat on raw
+        // coords could panic, and computing w/h from unclamped negative
+        // origins would over-expand the scissor.
+        const fb_w_f: f32 = @floatFromInt(fb_w);
+        const fb_h_f: f32 = @floatFromInt(fb_h);
+        const clip_x = std.math.clamp((cmd.*.ClipRect.x - disp_x) * fb_scale_x, 0.0, fb_w_f);
+        const clip_y = std.math.clamp((cmd.*.ClipRect.y - disp_y) * fb_scale_y, 0.0, fb_h_f);
+        const clip_z = std.math.clamp((cmd.*.ClipRect.z - disp_x) * fb_scale_x, 0.0, fb_w_f);
+        const clip_w = std.math.clamp((cmd.*.ClipRect.w - disp_y) * fb_scale_y, 0.0, fb_h_f);
         if (clip_z <= clip_x or clip_w <= clip_y) continue;
 
-        const sx: u16 = @intFromFloat(@max(clip_x, 0));
-        const sy: u16 = @intFromFloat(@max(clip_y, 0));
-        const sw: u16 = @intFromFloat(@max(clip_z - clip_x, 0));
-        const sh: u16 = @intFromFloat(@max(clip_w - clip_y, 0));
-        _ = fb_h;
+        const sx: u16 = @intFromFloat(clip_x);
+        const sy: u16 = @intFromFloat(clip_y);
+        const sw: u16 = @intFromFloat(clip_z - clip_x);
+        const sh: u16 = @intFromFloat(clip_w - clip_y);
         _ = bgfx.setScissor(sx, sy, sw, sh);
 
         // Resolve the bgfx texture handle stored in this cmd's TexID.
@@ -366,21 +409,45 @@ fn orthoMatrix(l: f32, r: f32, b: f32, t: f32) [16]f32 {
 
 // ── Texture management (RendererHasTextures path) ──────────────────────
 
-/// bgfx handles we created for ImGui textures. ImTextureID stores the bgfx
-/// handle idx directly (offset by +1 so 0 stays "invalid", matching
-/// ImTextureID_Invalid==0); see texId helpers below.
+/// Dense slot map of the bgfx handles we created for ImGui textures.
+///
+/// CRITICAL: bgfx allocates `TextureHandle.idx` from a GLOBAL pool (up to
+/// 4096). A texture-heavy game (e.g. flying-platform with 6+ atlases) can
+/// hand ImGui's font texture a handle idx well above any small array bound,
+/// so we must NOT use `handle.idx` as an array index. Instead we maintain our
+/// own dense, sequential slot table: on create we append the bgfx handle to
+/// the first free `imgui_textures` slot and store `(slot + 1)` in ImGui's
+/// `TexID`; on lookup we recover the slot via `TexID - 1` and read the real
+/// bgfx handle out of the table; on update/destroy we invalidate that slot.
+/// `TexID == 0` stays "invalid" (matches ImTextureID_Invalid).
+///
+/// MAX_TEXTURES only needs to cover ImGui's *concurrent* textures (the font
+/// atlas plus any user-supplied textures) — not the game's global texture
+/// count — so a modest fixed table is plenty.
 const MAX_TEXTURES = 64;
 var imgui_textures: [MAX_TEXTURES]bgfx.TextureHandle =
     [_]bgfx.TextureHandle{.{ .idx = INVALID }} ** MAX_TEXTURES;
 
-fn handleIdxToTexId(idx: u16) ig.ImTextureID {
-    // +1 so a valid handle (incl. idx 0) never maps to ImTextureID 0.
-    return @as(ig.ImTextureID, idx) + 1;
+/// Map a dense slot index (0-based) to the ImGui TexID stored in draw data.
+fn slotToTexId(slot: usize) ig.ImTextureID {
+    // +1 so slot 0 never maps to ImTextureID 0 (the "invalid" sentinel).
+    return @as(ig.ImTextureID, @intCast(slot)) + 1;
 }
 
+/// Recover the dense slot index from an ImGui TexID, or null if invalid /
+/// out of range.
+fn texIdToSlot(tex_id: ig.ImTextureID) ?usize {
+    if (tex_id == 0) return null;
+    const slot: usize = @intCast(tex_id - 1);
+    if (slot >= MAX_TEXTURES) return null;
+    return slot;
+}
+
+/// Resolve the bgfx texture handle a draw command references via its TexID.
+/// Returns INVALID if the slot is empty/out of range.
 fn texIdToHandleIdx(tex_id: ig.ImTextureID) u16 {
-    if (tex_id == 0) return INVALID;
-    return @intCast(tex_id - 1);
+    const slot = texIdToSlot(tex_id) orelse return INVALID;
+    return imgui_textures[slot].idx;
 }
 
 fn processTextures(dd: *ig.ImDrawData) void {
@@ -429,14 +496,24 @@ fn createTexture(tex: *ig.ImTextureData) void {
         std.log.err("imgui-bgfx: createTexture2D failed ({d}x{d})", .{ w, h });
         return;
     }
-    if (handle.idx >= MAX_TEXTURES) {
-        // Out of slots — destroy and bail rather than overflow the map.
+
+    // Find the first free DENSE slot — independent of the bgfx handle idx,
+    // which may be any value from the global pool.
+    var slot: ?usize = null;
+    for (0..MAX_TEXTURES) |i| {
+        if (!isValid(imgui_textures[i].idx)) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == null) {
+        // Out of dense slots — destroy and bail rather than corrupt the map.
         bgfx.destroyTexture(handle);
-        std.log.err("imgui-bgfx: texture handle idx {d} exceeds MAX_TEXTURES", .{handle.idx});
+        std.log.err("imgui-bgfx: exceeded MAX_TEXTURES ({d})", .{MAX_TEXTURES});
         return;
     }
-    imgui_textures[handle.idx] = handle;
-    ig.ImTextureData_SetTexID(tex, handleIdxToTexId(handle.idx));
+    imgui_textures[slot.?] = handle;
+    ig.ImTextureData_SetTexID(tex, slotToTexId(slot.?));
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_OK);
 }
 
@@ -447,21 +524,22 @@ fn updateTexturePixels(tex: *ig.ImTextureData) void {
     // rare (DPI/scale change, glyph reload), so the cost is negligible for
     // the MVP. A dynamic-texture + sub-rect updateTexture2D path is a
     // possible optimization follow-up.
-    const old_idx = texIdToHandleIdx(ig.ImTextureData_GetTexID(tex));
-    if (isValid(old_idx) and old_idx < MAX_TEXTURES) {
-        if (isValid(imgui_textures[old_idx].idx)) {
-            bgfx.destroyTexture(imgui_textures[old_idx]);
-            imgui_textures[old_idx] = .{ .idx = INVALID };
+    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| {
+        if (isValid(imgui_textures[slot].idx)) {
+            bgfx.destroyTexture(imgui_textures[slot]);
+            imgui_textures[slot] = .{ .idx = INVALID };
         }
     }
+    // createTexture re-resolves a free slot and writes a fresh TexID.
     createTexture(tex);
 }
 
 fn destroyTexture(tex: *ig.ImTextureData) void {
-    const idx = texIdToHandleIdx(ig.ImTextureData_GetTexID(tex));
-    if (isValid(idx) and idx < MAX_TEXTURES and isValid(imgui_textures[idx].idx)) {
-        bgfx.destroyTexture(imgui_textures[idx]);
-        imgui_textures[idx] = .{ .idx = INVALID };
+    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| {
+        if (isValid(imgui_textures[slot].idx)) {
+            bgfx.destroyTexture(imgui_textures[slot]);
+            imgui_textures[slot] = .{ .idx = INVALID };
+        }
     }
     ig.ImTextureData_SetTexID(tex, 0);
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_Destroyed);
