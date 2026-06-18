@@ -315,6 +315,86 @@ export fn imgui_bridge_mouse_wheel(wheel_x: f32, wheel_y: f32) void {
     ig.ImGuiIO_AddMouseWheelEvent(io, wheel_x, wheel_y);
 }
 
+// ── Keyboard input forwarding ──────────────────────────────────────────
+// Text input (and edit-navigation: backspace/enter/arrows/…) needs BOTH
+// character events (`AddInputCharacter`) AND key events (`AddKeyEvent`)
+// forwarded to imgui. Mouse-only forwarding let you click but not type —
+// e.g. the flying-platform save-name field ignored every key on bgfx. The
+// host (bgfx backend `input.zig`) feeds these from the GLFW char + key
+// callbacks. Keys arrive as raw GLFW keycodes and are translated to
+// `ImGuiKey` here (the bridge owns cimgui), mirroring how the sokol bridge
+// maps `sapp.Keycode` inline.
+
+/// A typed character (Unicode codepoint) from the GLFW char callback.
+/// Control chars are dropped (they belong to key events, not text).
+export fn imgui_bridge_char(codepoint: u32) void {
+    if (ig.igGetCurrentContext() == null) return;
+    if (codepoint < 32 or codepoint == 127) return;
+    const io = ig.igGetIO();
+    ig.ImGuiIO_AddInputCharacter(io, @intCast(codepoint));
+}
+
+/// A key down/up from the GLFW key callback (`key` is a raw GLFW keycode).
+/// Forwarded so imgui sees Backspace/Enter/Delete/arrows/Home/End and the
+/// Ctrl/Shift/Super modifiers (select-all, copy/paste, shift-select). An
+/// unmapped key resolves to `ImGuiKey_None`, which imgui silently drops.
+export fn imgui_bridge_key(key: i32, down: bool) void {
+    if (ig.igGetCurrentContext() == null) return;
+    const io = ig.igGetIO();
+    ig.ImGuiIO_AddKeyEvent(io, glfwToImguiKey(key), down);
+}
+
+/// Raw GLFW keycode → `ImGuiKey`. Covers the text-editing + common keys; a
+/// GLFW keycode with no imgui equivalent maps to `ImGuiKey_None`.
+fn glfwToImguiKey(key_i32: i32) ig.ImGuiKey {
+    // imgui key constants are `c_int`; cast once so the range arithmetic and
+    // switch below stay in one integer type.
+    const key: c_int = @intCast(key_i32);
+    // Letters A–Z (GLFW 65..90) and digits 0–9 (GLFW 48..57) are dense
+    // ranges in both encodings, so offset off the base ImGuiKey.
+    if (key >= 65 and key <= 90) return @intCast(ig.ImGuiKey_A + (key - 65));
+    if (key >= 48 and key <= 57) return @intCast(ig.ImGuiKey_0 + (key - 48));
+    if (key >= 290 and key <= 301) return @intCast(ig.ImGuiKey_F1 + (key - 290)); // F1..F12
+    return switch (key) {
+        32 => ig.ImGuiKey_Space,
+        39 => ig.ImGuiKey_Apostrophe,
+        44 => ig.ImGuiKey_Comma,
+        45 => ig.ImGuiKey_Minus,
+        46 => ig.ImGuiKey_Period,
+        47 => ig.ImGuiKey_Slash,
+        59 => ig.ImGuiKey_Semicolon,
+        61 => ig.ImGuiKey_Equal,
+        91 => ig.ImGuiKey_LeftBracket,
+        92 => ig.ImGuiKey_Backslash,
+        93 => ig.ImGuiKey_RightBracket,
+        96 => ig.ImGuiKey_GraveAccent,
+        256 => ig.ImGuiKey_Escape,
+        257 => ig.ImGuiKey_Enter,
+        258 => ig.ImGuiKey_Tab,
+        259 => ig.ImGuiKey_Backspace,
+        260 => ig.ImGuiKey_Insert,
+        261 => ig.ImGuiKey_Delete,
+        262 => ig.ImGuiKey_RightArrow,
+        263 => ig.ImGuiKey_LeftArrow,
+        264 => ig.ImGuiKey_DownArrow,
+        265 => ig.ImGuiKey_UpArrow,
+        266 => ig.ImGuiKey_PageUp,
+        267 => ig.ImGuiKey_PageDown,
+        268 => ig.ImGuiKey_Home,
+        269 => ig.ImGuiKey_End,
+        280 => ig.ImGuiKey_CapsLock,
+        340 => ig.ImGuiKey_LeftShift,
+        341 => ig.ImGuiKey_LeftCtrl,
+        342 => ig.ImGuiKey_LeftAlt,
+        343 => ig.ImGuiKey_LeftSuper,
+        344 => ig.ImGuiKey_RightShift,
+        345 => ig.ImGuiKey_RightCtrl,
+        346 => ig.ImGuiKey_RightAlt,
+        347 => ig.ImGuiKey_RightSuper,
+        else => ig.ImGuiKey_None,
+    };
+}
+
 export fn imgui_bridge_begin() void {
     // Lazy retry: if `setup` ran before bgfx.init (renderer was `.Noop`),
     // the program wasn't built yet. Idempotent once `initialized`, and a
