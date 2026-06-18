@@ -331,7 +331,7 @@ export fn imgui_bridge_char(codepoint: u32) void {
     if (ig.igGetCurrentContext() == null) return;
     if (codepoint < 32 or codepoint == 127) return;
     const io = ig.igGetIO();
-    ig.ImGuiIO_AddInputCharacter(io, codepoint);
+    ig.ImGuiIO_AddInputCharacter(io, @intCast(codepoint));
 }
 
 /// A key down/up from the GLFW key callback (`key` is a raw GLFW keycode).
@@ -346,7 +346,10 @@ export fn imgui_bridge_key(key: i32, down: bool) void {
 
 /// Raw GLFW keycode → `ImGuiKey`. Covers the text-editing + common keys; a
 /// GLFW keycode with no imgui equivalent maps to `ImGuiKey_None`.
-fn glfwToImguiKey(key: i32) ig.ImGuiKey {
+fn glfwToImguiKey(key_i32: i32) ig.ImGuiKey {
+    // imgui key constants are `c_int`; cast once so the range arithmetic and
+    // switch below stay in one integer type.
+    const key: c_int = @intCast(key_i32);
     // Letters A–Z (GLFW 65..90) and digits 0–9 (GLFW 48..57) are dense
     // ranges in both encodings, so offset off the base ImGuiKey.
     if (key >= 65 and key <= 90) return @intCast(ig.ImGuiKey_A + (key - 65));
