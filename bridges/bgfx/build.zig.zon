@@ -22,6 +22,18 @@
             .url = "https://codeberg.org/cyberegoorg/zbgfx/archive/8f01ea0ab6.tar.gz",
             .hash = "zbgfx-0.12.0-Sm4IxEuHywb45XqoIhv3iEOxKXc01aKNNVjI63FHvqFw",
         },
+        // emsdk is needed at WASM build time so we can plumb the sysroot
+        // include path through to the cimgui C++ compile (imgui.h pulls in
+        // <assert.h> et al — Zig ships no libc headers for wasm32-emscripten).
+        // Mirrors the pin in the sokol bridge's `build.zig.zon` and in
+        // `labelle-assembler/backends/sokol/build.zig.zon` — all must resolve
+        // to the same emsdk version. Lazy so non-WASM platforms don't fetch it.
+        // See labelle-cli#197.
+        .emsdk = .{
+            .url = "git+https://github.com/emscripten-core/emsdk#4.0.9",
+            .hash = "N-V-__8AAJl1DwBezhYo_VE6f53mPVm00R-Fk28NPW7P14EQ",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
