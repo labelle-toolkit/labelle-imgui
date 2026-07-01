@@ -35,9 +35,12 @@
 /// follow-up — FP's UI is mouse/touch driven, so mouse pos + click + wheel
 /// is the must-have that makes the overlay interactive.
 const std = @import("std");
+const builtin = @import("builtin");
 const bgfx = @import("zbgfx").bgfx;
 const shaders_data = @import("shaders.zig");
 const ig = @import("cimgui");
+
+const is_emscripten = builtin.target.os.tag == .emscripten;
 
 // Separate-root-module panic override. This file is compiled as its own
 // static-library root by `build.zig`, so the panic-handler override the
@@ -46,16 +49,50 @@ const ig = @import("cimgui");
 // here already means a fatal bug), and keeping it in sync with the other
 // bridges keeps the wasm/Android panic path consistent.
 //
-// NOTE: unlike the sokol bridge, we deliberately do NOT set
-// `std_options_debug_io = std.Io.failing`. That override is a sokol-bridge
-// wasm32-emscripten workaround (labelle-imgui#10) for `std.Io.Threaded`'s
-// broken posix wrappers. On the bgfx desktop path it actively breaks the
-// screenshot capture: bgfx's built-in default `screenShot` callback writes
-// the `.tga`, and a "failing" debug-IO root makes that path panic at
-// capture time (verified: the imgui window renders, then the program traps
-// the moment a screenshot is requested). bgfx never needs the sokol
-// workaround, so omit it.
+// NOTE: the `std.Io.failing` debug-IO override is EMSCRIPTEN-GATED here.
+// Unlike the sokol bridge — which sets it unconditionally — the bgfx desktop
+// path needs the DEFAULT debug IO: bgfx's built-in `screenShot` callback
+// writes the `.tga` through it, and a "failing" debug-IO root makes that
+// path panic at capture time (verified: the imgui window renders, then the
+// program traps the moment a screenshot is requested). So on desktop we
+// replicate std's own default (byte-identical to not declaring it), and only
+// on wasm32-emscripten do we sever `std.Io.Threaded` (see below).
 pub const panic = std.debug.no_panic;
+
+// wasm32-emscripten: this file is its own static-library root, so the
+// generated main.zig shims don't cover it. Zig 0.16's default log/debug-IO
+// reach std.Io.Threaded's child-process wait code, which fails to compile for
+// emscripten. Route logs to the browser console and mark debug IO failing so
+// std.Io.Threaded is never instantiated. Gated on emscripten so desktop
+// screenshot capture is unaffected.
+pub const std_options: std.Options = if (is_emscripten)
+    .{ .logFn = emscriptenLogFn }
+else
+    .{};
+
+// On emscripten use the failing IO (severs std.Io.Threaded); elsewhere
+// replicate std's own default (std.zig:221 → debug_threaded_io.?.io(), where
+// debug_threaded_io defaults to Io.Threaded.global_single_threaded) so desktop
+// is byte-identical to not declaring this. The else branch is only analyzed
+// off-emscripten.
+pub const std_options_debug_io = if (is_emscripten)
+    std.Io.failing
+else
+    std.Io.Threaded.global_single_threaded.io();
+
+extern fn emscripten_console_log(str: [*:0]const u8) void;
+
+fn emscriptenLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @TypeOf(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    _ = scope;
+    var buf: [512]u8 = undefined;
+    const line = std.fmt.bufPrintZ(&buf, "[" ++ level.asText() ++ "] " ++ format, args) catch return;
+    emscripten_console_log(line.ptr);
+}
 
 // ── bgfx render state ──────────────────────────────────────────────────
 
@@ -81,7 +118,6 @@ var last_frame_ns: i128 = 0;
 // would otherwise fail to link a Windows game exe (Cursor Bugbot flagged
 // this; `std.time.Timer` isn't available here to replace it). Only the
 // `std.time.ns_per_s` constant survives the std.time strip.
-const builtin = @import("builtin");
 fn nowNs() i128 {
     switch (builtin.os.tag) {
         .windows => {

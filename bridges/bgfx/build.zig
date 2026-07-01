@@ -65,6 +65,35 @@ pub fn build(b: *std.Build) void {
         cimgui_artifact.root_module.pic = true;
     }
 
+    // On Emscripten, the cimgui C++ compile (imgui.h pulls in <assert.h>,
+    // <string.h>, <math.h>, etc.) cannot find libc headers because Zig does
+    // not ship libc headers for `wasm32-emscripten` — they live in emsdk's
+    // sysroot. Mirror the sokol bridge (`bridges/sokol/build.zig`) and
+    // `labelle-assembler/backends/sokol/build.zig` (labelle-cli#197): plumb
+    // the emsdk sysroot include path into the cimgui C compile artifact.
+    // Gated on `.emscripten` so desktop / mobile builds remain untouched.
+    // Unlike the sokol bridge, we link no bgfx C library here (the backend
+    // owns that), so only cimgui_clib needs the include.
+    //
+    // The sokol bridge borrows sokol-zig's private `emSdkSetupStep` (chained
+    // onto `sokol_clib`) to actually populate/activate the sysroot before the
+    // C++ compile runs. This bridge has no sokol dependency, so we replicate
+    // that one-time setup ourselves (`emSdkSetupStep` below runs `emsdk
+    // install latest` + `emsdk activate latest`) and chain cimgui_clib onto
+    // it, so `-isystem ...sysroot/include` points at a populated path by the
+    // time `<assert.h>` is resolved. The setup is gated on the `.emscripten`
+    // marker file, so when the emsdk cache is already activated (e.g. a prior
+    // sokol-backend build in the same shared package cache) it's a no-op.
+    if (target.result.os.tag == .emscripten) {
+        if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
+            const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
+            cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+            if (emSdkSetupStep(b, emsdk_dep) catch @panic("emsdk setup failed")) |setup_step| {
+                cimgui_artifact.step.dependOn(&setup_step.step);
+            }
+        }
+    }
+
     const bridge_mod = b.addModule("mod_bgfx_imgui_bridge", .{
         .root_source_file = b.path("src/bridge.zig"),
         .target = target,
@@ -120,4 +149,45 @@ fn findAndroidNdkSysroot(b: *std.Build) ?[]const u8 {
 
     const version = latest orelse return null;
     return b.pathJoin(&.{ android_home, "ndk", version, "toolchains/llvm/prebuilt", host_tag, "sysroot" });
+}
+
+// ── emsdk one-time setup (ported from sokol-zig) ───────────────────────
+//
+// Replicates sokol-zig's private `emSdkSetupStep` / `createEmsdkStep` /
+// `fileExists` helpers verbatim so the bgfx bridge can populate + activate
+// the emsdk sysroot without a sokol dependency. Kept byte-compatible with
+// the sokol implementation (same `.emscripten` marker-file gate) so both
+// bridges share the emsdk package cache without stepping on each other.
+
+fn createEmsdkStep(b: *std.Build, emsdk: *std.Build.Dependency) *std.Build.Step.Run {
+    if (@import("builtin").os.tag == .windows) {
+        return b.addSystemCommand(&.{emsdk.path("emsdk.bat").getPath(b)});
+    } else {
+        const step = b.addSystemCommand(&.{"bash"});
+        step.addArg(emsdk.path("emsdk").getPath(b));
+        return step;
+    }
+}
+
+fn fileExists(b: *std.Build, path: []const u8) !bool {
+    return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
+}
+
+/// One-time setup of the Emscripten SDK (runs `emsdk install + activate`).
+/// If the SDK had to be set up, a run step is returned that should be added
+/// as a dependency of anything needing the sysroot; if the emsdk was already
+/// set up (`.emscripten` marker present), null is returned.
+fn emSdkSetupStep(b: *std.Build, emsdk: *std.Build.Dependency) !?*std.Build.Step.Run {
+    const dot_emsc_path = emsdk.path(".emscripten").getPath(b);
+    const dot_emsc_exists = try fileExists(b, dot_emsc_path);
+    if (!dot_emsc_exists) {
+        const emsdk_install = createEmsdkStep(b, emsdk);
+        emsdk_install.addArgs(&.{ "install", "latest" });
+        const emsdk_activate = createEmsdkStep(b, emsdk);
+        emsdk_activate.addArgs(&.{ "activate", "latest" });
+        emsdk_activate.step.dependOn(&emsdk_install.step);
+        return emsdk_activate;
+    } else {
+        return null;
+    }
 }
