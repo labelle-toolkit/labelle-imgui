@@ -16,9 +16,14 @@
             .url = "git+https://github.com/floooh/dcimgui.git#4557d7526fdd977f46ca10c2bbdd63532254f8d6",
             .hash = "cimgui-0.1.0-44ClkXnYlwBKnil7TfCWL9z1Zo_2YJCJREzrpdFiGvA1",
         },
+        // Bumped from the stale 5.6.0-dev pin (commit cd71c85) to 6.0.0
+        // (commit f25c517) to mirror the assembler's bundled bridge. The
+        // 5.6.0-dev build.zig used `std.mem.trimLeft` /
+        // `std.process.getEnvVarOwned`, both removed in Zig 0.16, so the
+        // raylib+imgui path failed to compile on Zig 0.16 (labelle-imgui#25).
         .@"raylib-zig" = .{
-            .url = "https://github.com/raylib-zig/raylib-zig/archive/cd71c85d571027ac8033357f83b124ee051825b3.tar.gz",
-            .hash = "raylib_zig-5.6.0-dev-KE8REENOBQC-m5nK7M2b5aKSIubJPbPLUYcRhT7aT3RN",
+            .url = "https://github.com/raylib-zig/raylib-zig/archive/f25c5173b4c40ef53c7ccf6d8d51ead0892f9f22.tar.gz",
+            .hash = "raylib_zig-6.0.0-KE8REDJ4BQBu7lKwYNt6R4j5ywPeS37zqW6zrtjCcRwH",
         },
     },
     .paths = .{
