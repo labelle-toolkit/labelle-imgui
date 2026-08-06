@@ -632,7 +632,13 @@ fn renderDrawList(
         const tex_id = ig.ImDrawCmd_GetTexID(cmd);
         const tex_handle = bgfx.TextureHandle{ .idx = texIdToHandleIdx(tex_id) };
         if (!isValid(tex_handle.idx)) continue;
-        bgfx.setTexture(0, s_tex_uniform, tex_handle, 0);
+        // `UINT32_MAX` = "sample with the flags the texture was CREATED
+        // with". Passing 0 instead does not mean "default" — it overrides
+        // the sampler with all-bits-zero (wrap-repeat, mip filtering),
+        // which is survivable for our own font atlas (clamped, no mips)
+        // but wrong for a texture the host created, whose clamp/point
+        // flags are part of how its atlas is meant to be read.
+        bgfx.setTexture(0, s_tex_uniform, tex_handle, std.math.maxInt(u32));
 
         bgfx.setState(bgfx.StateFlags_WriteRgb | bgfx.StateFlags_WriteA | blendAlpha(), 0);
 
@@ -687,6 +693,35 @@ fn orthoMatrix(l: f32, r: f32, b: f32, t: f32) [16]f32 {
 const MAX_TEXTURES = 64;
 var imgui_textures: [MAX_TEXTURES]bgfx.TextureHandle =
     [_]bgfx.TextureHandle{.{ .idx = INVALID }} ** MAX_TEXTURES;
+
+/// Whether WE created the texture in each slot, and therefore whether we
+/// may destroy it.
+///
+/// Slots registered through `imgui_bridge_register_texture` hold a handle
+/// the *host application* owns — a sprite atlas the game loaded and is
+/// still drawing with. Destroying one on ImGui's say-so would yank a live
+/// texture out from under the game. Every `bgfx.destroyTexture` below is
+/// gated on this flag; unregistering an external slot just clears the
+/// mapping.
+var imgui_texture_owned: [MAX_TEXTURES]bool = [_]bool{false} ** MAX_TEXTURES;
+
+/// First unused dense slot, or null when the table is full.
+fn findFreeSlot() ?usize {
+    for (0..MAX_TEXTURES) |i| {
+        if (!isValid(imgui_textures[i].idx)) return i;
+    }
+    return null;
+}
+
+/// Release a slot, destroying the underlying bgfx texture only if this
+/// bridge created it.
+fn releaseSlot(slot: usize) void {
+    if (isValid(imgui_textures[slot].idx) and imgui_texture_owned[slot]) {
+        bgfx.destroyTexture(imgui_textures[slot]);
+    }
+    imgui_textures[slot] = .{ .idx = INVALID };
+    imgui_texture_owned[slot] = false;
+}
 
 /// Map a dense slot index (0-based) to the ImGui TexID stored in draw data.
 fn slotToTexId(slot: usize) ig.ImTextureID {
@@ -759,21 +794,15 @@ fn createTexture(tex: *ig.ImTextureData) void {
 
     // Find the first free DENSE slot — independent of the bgfx handle idx,
     // which may be any value from the global pool.
-    var slot: ?usize = null;
-    for (0..MAX_TEXTURES) |i| {
-        if (!isValid(imgui_textures[i].idx)) {
-            slot = i;
-            break;
-        }
-    }
-    if (slot == null) {
+    const slot = findFreeSlot() orelse {
         // Out of dense slots — destroy and bail rather than corrupt the map.
         bgfx.destroyTexture(handle);
         std.log.err("imgui-bgfx: exceeded MAX_TEXTURES ({d})", .{MAX_TEXTURES});
         return;
-    }
-    imgui_textures[slot.?] = handle;
-    ig.ImTextureData_SetTexID(tex, slotToTexId(slot.?));
+    };
+    imgui_textures[slot] = handle;
+    imgui_texture_owned[slot] = true; // we created it, so we destroy it
+    ig.ImTextureData_SetTexID(tex, slotToTexId(slot));
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_OK);
 }
 
@@ -798,32 +827,65 @@ fn updateTexturePixels(tex: *ig.ImTextureData) void {
     if (tex.*.Status == ig.ImTextureStatus_OK and
         ig.ImTextureData_GetTexID(tex) != old_texid)
     {
-        if (old_slot) |slot| {
-            if (isValid(imgui_textures[slot].idx)) {
-                bgfx.destroyTexture(imgui_textures[slot]);
-                imgui_textures[slot] = .{ .idx = INVALID };
-            }
-        }
+        if (old_slot) |slot| releaseSlot(slot);
     }
     // else: create failed — old texture + slot + TexID left intact.
 }
 
 fn destroyTexture(tex: *ig.ImTextureData) void {
-    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| {
-        if (isValid(imgui_textures[slot].idx)) {
-            bgfx.destroyTexture(imgui_textures[slot]);
-            imgui_textures[slot] = .{ .idx = INVALID };
-        }
-    }
+    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| releaseSlot(slot);
     ig.ImTextureData_SetTexID(tex, 0);
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_Destroyed);
 }
 
 fn destroyAllTextures() void {
-    for (0..MAX_TEXTURES) |i| {
-        if (isValid(imgui_textures[i].idx)) {
-            bgfx.destroyTexture(imgui_textures[i]);
-            imgui_textures[i] = .{ .idx = INVALID };
-        }
+    // `releaseSlot` skips the bgfx destroy for externally-owned handles —
+    // on shutdown the host still owns those and frees them itself.
+    for (0..MAX_TEXTURES) |i| releaseSlot(i);
+}
+
+// ── External textures ──────────────────────────────────────────────────
+//
+// Lets the host hand ImGui a texture it already loaded, so overlay code
+// can draw game art (a sprite atlas, an icon sheet) with
+// `ImDrawList::AddImage`. Before this, the only textures ImGui could
+// sample were ones it created itself from its own pixel buffers, which
+// left `AddImage` unusable for anything the game had on the GPU.
+//
+// The handle is passed as a plain `u16` (a `bgfx::TextureHandle::idx`) to
+// keep the C ABI free of bgfx types. The registration is a borrow: the
+// host keeps ownership and must call the unregister entry point before
+// destroying the texture.
+
+/// Map an existing bgfx texture into the ImGui texture table.
+///
+/// Returns an `ImTextureID` usable in `ImDrawList::AddImage`, or 0 if the
+/// handle is invalid or the table is full. The bridge will never destroy
+/// this texture.
+export fn imgui_bridge_register_texture(handle_idx: u16) u64 {
+    if (!isValid(handle_idx)) return 0;
+    const slot = findFreeSlot() orelse {
+        std.log.err(
+            "imgui-bgfx: no free texture slot to register external handle ({d} in use)",
+            .{MAX_TEXTURES},
+        );
+        return 0;
+    };
+    imgui_textures[slot] = .{ .idx = handle_idx };
+    imgui_texture_owned[slot] = false; // borrowed — host owns it
+    return @intCast(slotToTexId(slot));
+}
+
+/// Drop a previously registered external texture. The underlying bgfx
+/// texture is left alone; only the mapping is released. Unknown or
+/// already-released ids are ignored, so this is safe to call twice.
+export fn imgui_bridge_unregister_texture(tex_id: u64) void {
+    const slot = texIdToSlot(@intCast(tex_id)) orelse return;
+    if (imgui_texture_owned[slot]) {
+        // Refuse to unregister a texture ImGui created — that would leak
+        // it, since the host has no handle to free.
+        std.log.warn("imgui-bgfx: refusing to unregister bridge-owned texture", .{});
+        return;
     }
+    imgui_textures[slot] = .{ .idx = INVALID };
 }

@@ -25,3 +25,21 @@ void imgui_bridge_end(void) {
 void imgui_bridge_shutdown(void) {
     rlImGuiShutdown();
 }
+
+// External textures — not supported on this bridge.
+//
+// rlImGui owns the ImTextureID mapping itself (a raylib Texture2D id is
+// handed to ImGui directly), so there is no slot table here to register a
+// borrowed handle into. Callers that need game art in an ImGui draw list
+// on raylib should pass the raylib texture id straight to AddImage.
+//
+// Returning 0 (ImTextureID_Invalid) is the documented "unsupported"
+// answer; the adapter tells callers to check for it.
+unsigned long long imgui_bridge_register_texture(unsigned short handle_idx) {
+    (void)handle_idx;
+    return 0;
+}
+
+void imgui_bridge_unregister_texture(unsigned long long tex_id) {
+    (void)tex_id;
+}
