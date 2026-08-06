@@ -9,6 +9,8 @@ extern fn imgui_bridge_setup(dark_theme: bool) void;
 extern fn imgui_bridge_begin() void;
 extern fn imgui_bridge_end() void;
 extern fn imgui_bridge_shutdown() void;
+extern fn imgui_bridge_register_texture(handle_idx: u16) u64;
+extern fn imgui_bridge_unregister_texture(tex_id: u64) void;
 
 pub fn init() void {
     imgui_bridge_setup(true);
@@ -100,4 +102,33 @@ pub fn tableNextRow() void {
 
 pub fn tableNextColumn() bool {
     return ig.igTableNextColumn();
+}
+
+// ── External textures ──────────────────────────────────────────────────
+//
+// Hand ImGui a texture the application already has on the GPU, so overlay
+// code can draw game art with `ImDrawList::AddImage`. Without this, the
+// only textures ImGui can sample are the ones it uploaded itself from its
+// own pixel buffers — which leaves `AddImage` unusable for a sprite atlas
+// the renderer loaded.
+//
+// Support is per-bridge: bgfx implements it, raylib and sokol return 0
+// (see each bridge's stub for why). Always check for 0 before drawing.
+
+/// Register a renderer-native texture handle and get an `ImTextureID` for
+/// it. Returns 0 when the handle is invalid, the table is full, or the
+/// active bridge does not support external textures.
+///
+/// This is a **borrow**: the caller keeps ownership and must call
+/// `unregisterTexture` before destroying the texture, or ImGui may sample
+/// a dead handle.
+pub fn registerTexture(handle_idx: u16) u64 {
+    return imgui_bridge_register_texture(handle_idx);
+}
+
+/// Release a previously registered external texture. The underlying
+/// texture is left untouched — only ImGui's mapping is dropped. Safe to
+/// call with an unknown or already-released id.
+pub fn unregisterTexture(tex_id: u64) void {
+    imgui_bridge_unregister_texture(tex_id);
 }

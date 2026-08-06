@@ -96,6 +96,25 @@ export fn imgui_bridge_shutdown() void {
     simgui.shutdown();
 }
 
+// External textures — not supported on this bridge.
+//
+// sokol_imgui manages its own image/sampler pairing through
+// `simgui_imtextureid()`, which takes an `sg_image` rather than a raw
+// backend handle, so there is no slot table here to register a borrowed
+// `u16` into. Callers wanting game art in an ImGui draw list on sokol
+// should go through `simgui_imtextureid` directly.
+//
+// Returning 0 (ImTextureID_Invalid) is the documented "unsupported"
+// answer; the adapter tells callers to check for it.
+export fn imgui_bridge_register_texture(handle_idx: u16) u64 {
+    _ = handle_idx;
+    return 0;
+}
+
+export fn imgui_bridge_unregister_texture(tex_id: u64) void {
+    _ = tex_id;
+}
+
 /// Handle sokol_app events for imgui input (mouse, scroll, keyboard).
 /// `SOKOL_IMGUI_NO_SOKOL_APP` removed `simgui_handle_event` (the
 /// one-call shortcut that reads from sapp internally), but the
