@@ -106,6 +106,10 @@ var sprite_program: bgfx.ProgramHandle = .{ .idx = INVALID };
 var s_tex_uniform: bgfx.UniformHandle = .{ .idx = INVALID };
 var vertex_layout: bgfx.VertexLayout = undefined;
 var initialized: bool = false;
+/// Set by `imgui_bridge_invalidate_textures`; consumed by the next
+/// `processTextures`, which forces every ImGui texture back to
+/// `WantCreate` so it is re-uploaded to the fresh GPU context.
+var textures_invalidated: bool = false;
 /// Monotonic-clock timestamp (ns) of the previous `imgui_bridge_begin`,
 /// used to derive the real per-frame `io.DeltaTime` (and hence
 /// `io.Framerate`). Zero until the first frame establishes a baseline.
@@ -292,6 +296,47 @@ export fn imgui_bridge_shutdown() void {
     // giant dt from the pre-shutdown timestamp (Cursor Bugbot, low sev).
     last_frame_ns = 0;
     ig.igDestroyContext(null);
+}
+
+/// Drop every GPU object this bridge owns, WITHOUT destroying the ImGui
+/// context — for a host whose graphics device died and came back (Android
+/// surface loss on background/resume, GL context loss).
+///
+/// Call this while the old context is still nominally current, i.e. BEFORE
+/// the host's `bgfx.shutdown`, so the handles are released rather than
+/// leaked (bgfx reports live handles at shutdown).
+///
+/// Deliberately narrower than `imgui_bridge_shutdown`: keeping the context
+/// preserves the UI's own state — open windows, scroll offsets, and any
+/// fonts the host added to the atlas, which a context re-create would
+/// silently reset to ImGui's default face. `initialized = false` lets the
+/// lazy re-init in `imgui_bridge_render` rebuild the program + uniform
+/// against the new context, and `textures_invalidated` makes the next
+/// `processTextures` re-upload the font atlas.
+///
+/// Idempotent: safe to call when nothing was ever initialized, and safe to
+/// call twice.
+export fn imgui_bridge_invalidate_textures() void {
+    if (isValid(sprite_program.idx)) {
+        bgfx.destroyProgram(sprite_program);
+        sprite_program = .{ .idx = INVALID };
+    }
+    if (isValid(s_tex_uniform.idx)) {
+        bgfx.destroyUniform(s_tex_uniform);
+        s_tex_uniform = .{ .idx = INVALID };
+    }
+    // Releases only the slots this bridge created; slots registered by the
+    // host via `imgui_bridge_register_texture` just have their mapping
+    // cleared, since the host owns those handles and re-registers them
+    // after its own catalog rebuild.
+    destroyAllTextures();
+    initialized = false;
+    // A device-loss re-init is a fresh, honest attempt — clear the
+    // permanent give-up latch so a failure from the DEAD context doesn't
+    // keep rendering disabled on the new one.
+    render_disabled = false;
+    textures_invalidated = true;
+    std.log.info("imgui-bgfx: textures invalidated (device lost) — will re-upload", .{});
 }
 
 // ── Frame begin ────────────────────────────────────────────────────────
@@ -752,10 +797,22 @@ fn processTextures(dd: *ig.ImDrawData) void {
     var i: usize = 0;
     while (i < count) : (i += 1) {
         const tex = items[i];
+        // After a surface loss every bgfx texture we uploaded is gone, but
+        // ImGui still holds `Status == OK` and a `TexID` pointing at a slot
+        // we just cleared — so it would never re-request the upload and the
+        // draw calls would sample a destroyed (or recycled) handle. Force
+        // each texture back to `WantCreate` on the first frame after the
+        // invalidation so ImGui's own pixel data is re-uploaded to the new
+        // context. See `imgui_bridge_invalidate_textures`.
+        if (textures_invalidated) {
+            ig.ImTextureData_SetTexID(tex, 0);
+            ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_WantCreate);
+        }
         if (tex.*.Status != ig.ImTextureStatus_OK) {
             updateTexture(tex);
         }
     }
+    textures_invalidated = false;
 }
 
 fn updateTexture(tex: *ig.ImTextureData) void {
