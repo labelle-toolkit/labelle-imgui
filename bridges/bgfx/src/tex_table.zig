@@ -50,6 +50,13 @@ pub const INVALID_HANDLE: u16 = std.math.maxInt(u16);
 
 pub const MAX_TEXTURES: usize = 64;
 
+/// Sentinel generation of a RETIRED slot: one that has been recycled 2^32-1
+/// times and is taken out of service instead of wrapping back to 0 — a
+/// wrap would let an ancient generation-0 id look up as live again, and a
+/// stale unregister could then free a newer occupant. Never minted into an
+/// id (`insert` skips retired slots), so a matching id is garbage.
+pub const RETIRED_GEN: u32 = std.math.maxInt(u32);
+
 const SLOT_BITS: u6 = 16;
 const GEN_BITS: u6 = 32;
 const SLOT_MASK: u64 = (1 << SLOT_BITS) - 1;
@@ -118,10 +125,10 @@ pub const TextureTable = struct {
 
     // ── Table operations ───────────────────────────────────────────────
 
-    /// First unused slot, or null when the table is full.
+    /// First unused, non-retired slot, or null when the table is full.
     pub fn findFreeSlot(self: *const TextureTable) ?usize {
         for (0..MAX_TEXTURES) |i| {
-            if (self.handles[i] == INVALID_HANDLE) return i;
+            if (self.handles[i] == INVALID_HANDLE and self.generation[i] != RETIRED_GEN) return i;
         }
         return null;
     }
@@ -155,6 +162,9 @@ pub const TextureTable = struct {
     /// resolve. The render path uses the `Miss` to log precisely.
     pub fn lookup(self: *const TextureTable, id: u64) Lookup {
         const d = decode(id) orelse return .{ .miss = .malformed };
+        // A retired slot never issued its sentinel generation, so nothing
+        // referencing it is live — including a hand-minted RETIRED_GEN id.
+        if (self.generation[d.slot] == RETIRED_GEN) return .{ .miss = .stale };
         if (self.generation[d.slot] != d.gen) return .{ .miss = .stale };
         if (self.handles[d.slot] == INVALID_HANDLE) return .{ .miss = .empty };
         return .{ .live = d.slot };
@@ -185,14 +195,16 @@ pub const TextureTable = struct {
     ///
     /// The bump on live -> free is the whole invariant: any id minted for
     /// the old occupant now fails `lookup` as `.stale`, and the NEXT
-    /// occupant's id carries the new generation.
+    /// occupant's id carries the new generation. The bump saturates: when
+    /// it would reach `RETIRED_GEN` the slot is retired rather than wrapped
+    /// to 0 (CodeRabbit on #31), so no id ever aliases across the ceiling.
     pub fn release(self: *TextureTable, slot: usize) ?Entry {
         std.debug.assert(slot < MAX_TEXTURES);
         if (self.handles[slot] == INVALID_HANDLE) return null;
         const prev: Entry = .{ .handle_idx = self.handles[slot], .owned = self.owned[slot] };
         self.handles[slot] = INVALID_HANDLE;
         self.owned[slot] = false;
-        self.generation[slot] +%= 1;
+        self.generation[slot] += 1; // last minted gen is RETIRED_GEN-1, so this cannot overflow
         return prev;
     }
 
@@ -337,20 +349,34 @@ test "the #30 scenario: host lend in slot 0, device-lost, font atlas recycles sl
     try testing.expectEqual(@as(u16, 302), t.resolve(relend));
 }
 
-test "generation survives many recycles and wraps without ever aliasing" {
+test "generation ceiling retires the slot instead of wrapping to 0" {
     var t: T = .empty;
-    var last: u64 = 0;
-    // Pre-set the slot's generation near the u32 limit to exercise wrap.
-    t.generation[0] = std.math.maxInt(u32) - 2;
-    for (0..6) |_| {
-        const id = t.insert(5, false).?;
-        try testing.expectEqual(@as(usize, 0), T.decode(id).?.slot);
-        try testing.expect(id != last);
-        try testing.expect(t.isLive(id));
-        if (last != 0) try testing.expect(!t.isLive(last));
-        _ = t.release(0).?;
-        last = id;
+    const ancient = T.encode(0, 0); // a generation-0 id for slot 0
+    // Drive slot 0 to the last mintable generation.
+    t.generation[0] = RETIRED_GEN - 2;
+    const a = t.insert(5, false).?;
+    try testing.expectEqual(@as(usize, 0), T.decode(a).?.slot);
+    _ = t.release(0).?;
+    const b = t.insert(6, false).?; // gen RETIRED_GEN-1: the last id slot 0 ever issues
+    try testing.expectEqual(@as(usize, 0), T.decode(b).?.slot);
+    try testing.expectEqual(RETIRED_GEN - 1, T.decode(b).?.gen);
+    _ = t.release(0).?;
+    try testing.expectEqual(RETIRED_GEN, t.generation[0]);
+
+    // Retired: never handed out again, so the next insert skips to slot 1.
+    try testing.expectEqual(@as(?usize, 1), t.findFreeSlot());
+    const c = t.insert(7, false).?;
+    try testing.expectEqual(@as(usize, 1), T.decode(c).?.slot);
+
+    // Neither the ancient generation-0 id nor the last real ids look up or
+    // release anything — no aliasing across the ceiling.
+    for ([_]u64{ ancient, a, b, T.encode(0, RETIRED_GEN) }) |id| {
+        try testing.expect(!t.isLive(id));
+        try testing.expectEqual(T.Lookup{ .miss = .stale }, t.lookup(id));
+        try testing.expectEqual(@as(?Entry, null), t.releaseId(id));
     }
+    try testing.expect(t.isLive(c));
+    try testing.expectEqual(@as(usize, 1), t.liveCount());
 }
 
 test "lookup classifies malformed vs stale vs empty" {
