@@ -22,4 +22,21 @@ pub fn build(b: *std.Build) void {
     // Re-export cimgui artifact so it can be linked into the final executable
     const cimgui_artifact = dep_cimgui.artifact(cimgui_conf.clib_name);
     b.installArtifact(cimgui_artifact);
+
+    // ── Unit tests ─────────────────────────────────────────────────────
+    // The adapter is a thin extern shim with nothing to test headless. The
+    // bgfx bridge's texture slot table (`bridges/bgfx/src/tex_table.zig`)
+    // is pure Zig — no zbgfx/cimgui import — so it runs from the repo root
+    // too, without pulling the bridge's own dependency tree. Kept in sync
+    // with `bridges/bgfx/build.zig`'s `test` step (same file, same tests).
+    const host_target = b.resolveTargetQuery(.{});
+    const tex_table_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bridges/bgfx/src/tex_table.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    const test_step = b.step("test", "Run labelle-imgui unit tests");
+    test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
 }

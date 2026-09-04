@@ -11,6 +11,7 @@ extern fn imgui_bridge_end() void;
 extern fn imgui_bridge_shutdown() void;
 extern fn imgui_bridge_register_texture(handle_idx: u16) u64;
 extern fn imgui_bridge_unregister_texture(tex_id: u64) void;
+extern fn imgui_bridge_texture_registered(tex_id: u64) bool;
 
 pub fn init() void {
     imgui_bridge_setup(true);
@@ -114,6 +115,29 @@ pub fn tableNextColumn() bool {
 //
 // Support is per-bridge: bgfx implements it, raylib and sokol return 0
 // (see each bridge's stub for why). Always check for 0 before drawing.
+//
+// ## Lifetime contract — lends do NOT survive device loss
+//
+// A registered id is valid only for the life of the current GPU device.
+// On Android the surface (and with it every bgfx texture) dies on
+// background/resume; the bridge frees its whole texture table in its
+// device-lost pass and re-uploads only the textures IT owns (the font
+// atlas). It cannot re-lend yours. The host owns both ends:
+//
+//   engine__surface_lost      -> `unregisterTexture(id)`, then free your
+//                                texture (the event is synchronous since
+//                                labelle-engine 2.13.0 — labelle-engine#820
+//                                / #823 — so the handle is still alive and
+//                                the bridge's invalidate has not yet run);
+//   engine__surface_restored  -> re-upload, `registerTexture(new_handle)`,
+//                                and draw with the NEW id from then on.
+//
+// Ids are generation-tagged (labelle-imgui#30): an id minted before a
+// device loss no longer matches its slot afterwards, so drawing with it
+// draws NOTHING (the bridge logs once per stale id) instead of sampling
+// whichever texture now occupies the slot, and `isTextureRegistered(id)`
+// returns false — use it as a cheap per-frame probe for "my lend was
+// dropped, re-register" in place of an ad-hoc latch reset.
 
 /// Register a renderer-native texture handle and get an `ImTextureID` for
 /// it. Returns 0 when the handle is invalid, the table is full, or the
@@ -121,14 +145,28 @@ pub fn tableNextColumn() bool {
 ///
 /// This is a **borrow**: the caller keeps ownership and must call
 /// `unregisterTexture` before destroying the texture, or ImGui may sample
-/// a dead handle.
+/// a dead handle. The borrow ends with the GPU device — see the lifetime
+/// contract above; after a device loss you hold a stale id and must
+/// register again.
 pub fn registerTexture(handle_idx: u16) u64 {
     return imgui_bridge_register_texture(handle_idx);
 }
 
 /// Release a previously registered external texture. The underlying
 /// texture is left untouched — only ImGui's mapping is dropped. Safe to
-/// call with an unknown or already-released id.
+/// call with an unknown, stale, or already-released id: a stale id can
+/// never release whatever texture has since taken its slot.
 pub fn unregisterTexture(tex_id: u64) void {
     imgui_bridge_unregister_texture(tex_id);
+}
+
+/// Whether `tex_id` still resolves to a live texture in the active bridge.
+///
+/// False for 0, for an id released by `unregisterTexture`, and for an id
+/// whose slot was dropped by the bridge's device-lost pass — even if the
+/// slot has been re-occupied since. Pure table lookup (no renderer call),
+/// so it is cheap enough to ask every frame before drawing. Bridges
+/// without external-texture support always return false.
+pub fn isTextureRegistered(tex_id: u64) bool {
+    return imgui_bridge_texture_registered(tex_id);
 }

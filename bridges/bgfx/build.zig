@@ -113,6 +113,23 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     b.installArtifact(bridge_lib);
+
+    // ── Unit tests ─────────────────────────────────────────────────────
+    // `bridge.zig` itself needs a live bgfx + cimgui link and cannot run
+    // headless, but the texture slot table it builds on (`tex_table.zig`:
+    // id encode/decode, generation bumps, stale-id rejection — the #30
+    // fix) is pure Zig, so it EXECUTES here on the host. Pinned to the host
+    // target so `zig build test` still runs under `-Dtarget=` cross builds.
+    const host_target = b.resolveTargetQuery(.{});
+    const tex_table_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tex_table.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    const test_step = b.step("test", "Run bgfx bridge unit tests");
+    test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
 }
 
 /// Locate the Android NDK sysroot — ported verbatim from the sokol bridge

@@ -115,6 +115,12 @@ export fn imgui_bridge_unregister_texture(tex_id: u64) void {
     _ = tex_id;
 }
 
+/// No lends are ever issued here, so none is ever live (labelle-imgui#30).
+export fn imgui_bridge_texture_registered(tex_id: u64) bool {
+    _ = tex_id;
+    return false;
+}
+
 /// Handle sokol_app events for imgui input (mouse, scroll, keyboard).
 /// `SOKOL_IMGUI_NO_SOKOL_APP` removed `simgui_handle_event` (the
 /// one-call shortcut that reads from sapp internally), but the
