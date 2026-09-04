@@ -21,9 +21,20 @@
 ///
 /// Texture handling uses the modern 1.92 `ImGuiBackendFlags_RendererHasTextures`
 /// path (mirrors sokol_imgui.h): each frame we walk `draw_data.Textures[]`
-/// and honour WantCreate / WantUpdates / WantDestroy, storing our bgfx
-/// `TextureHandle.idx` in the texture's `TexID`. The font atlas is created
-/// this way on the first frame — no explicit `GetTexDataAsRGBA32` call.
+/// and honour WantCreate / WantUpdates / WantDestroy. The bgfx handle is
+/// NOT stored in `TexID` directly: `TexID` is a generation-tagged slot id
+/// into the bridge's dense texture table (`tex_table.zig`), which also
+/// holds textures the host lends via `imgui_bridge_register_texture`. The
+/// font atlas is created this way on the first frame — no explicit
+/// `GetTexDataAsRGBA32` call.
+///
+/// DEVICE LOSS (Android surface restore): `imgui_bridge_invalidate_textures`
+/// frees every table slot and re-uploads the bridge's own textures on the
+/// next frame. Host lends are NOT re-lent — the bridge does not own them —
+/// and their ids go stale (generation mismatch) rather than pointing at
+/// whatever texture recycled the slot. Hosts unregister on the synchronous
+/// `engine__surface_lost`, re-register after `engine__surface_restored`,
+/// and can probe `imgui_bridge_texture_registered(id)`. labelle-imgui#30.
 ///
 /// INPUT forwarding (mouse → `io.AddMousePosEvent` etc.) is implemented via
 /// the `imgui_bridge_mouse_pos` / `imgui_bridge_mouse_button` /
@@ -720,74 +731,92 @@ fn orthoMatrix(l: f32, r: f32, b: f32, t: f32) [16]f32 {
 
 // ── Texture management (RendererHasTextures path) ──────────────────────
 
-/// Dense slot map of the bgfx handles we created for ImGui textures.
+/// Generation-tagged dense slot table mapping ImGui `TexID`s to the bgfx
+/// handles ImGui may sample — the ones this bridge created (font atlas) and
+/// the ones the host lent via `imgui_bridge_register_texture`.
 ///
-/// CRITICAL: bgfx allocates `TextureHandle.idx` from a GLOBAL pool (up to
-/// 4096). A texture-heavy game (e.g. flying-platform with 6+ atlases) can
-/// hand ImGui's font texture a handle idx well above any small array bound,
-/// so we must NOT use `handle.idx` as an array index. Instead we maintain our
-/// own dense, sequential slot table: on create we append the bgfx handle to
-/// the first free `imgui_textures` slot and store `(slot + 1)` in ImGui's
-/// `TexID`; on lookup we recover the slot via `TexID - 1` and read the real
-/// bgfx handle out of the table; on update/destroy we invalidate that slot.
-/// `TexID == 0` stays "invalid" (matches ImTextureID_Invalid).
+/// Why dense, why generations, and the 64-bit id layout are documented on
+/// `tex_table.zig` (labelle-imgui#30). The short version: bgfx's
+/// `TextureHandle.idx` comes from a GLOBAL pool so it can't be an array
+/// index, and a slot-only id can't tell its slot was recycled after a
+/// device loss — the host's stale lend silently drew the re-created font
+/// atlas. The generation in the id makes a stale id fail to resolve, so
+/// the render path skips the draw (and logs once) instead.
 ///
-/// MAX_TEXTURES only needs to cover ImGui's *concurrent* textures (the font
-/// atlas plus any user-supplied textures) — not the game's global texture
-/// count — so a modest fixed table is plenty.
-const MAX_TEXTURES = 64;
-var imgui_textures: [MAX_TEXTURES]bgfx.TextureHandle =
-    [_]bgfx.TextureHandle{.{ .idx = INVALID }} ** MAX_TEXTURES;
+/// The table is pure (no bgfx calls). Every `bgfx.destroyTexture` lives in
+/// `releaseSlot` below and is gated on `Entry.owned`: slots lent by the
+/// host hold a handle the *host* owns — a sprite atlas the game is still
+/// drawing with — and destroying one on ImGui's say-so would yank a live
+/// texture out from under the game.
+const tex_table = @import("tex_table.zig");
+const MAX_TEXTURES = tex_table.MAX_TEXTURES;
+var textures: tex_table.TextureTable = .empty;
 
-/// Whether WE created the texture in each slot, and therefore whether we
-/// may destroy it.
-///
-/// Slots registered through `imgui_bridge_register_texture` hold a handle
-/// the *host application* owns — a sprite atlas the game loaded and is
-/// still drawing with. Destroying one on ImGui's say-so would yank a live
-/// texture out from under the game. Every `bgfx.destroyTexture` below is
-/// gated on this flag; unregistering an external slot just clears the
-/// mapping.
-var imgui_texture_owned: [MAX_TEXTURES]bool = [_]bool{false} ** MAX_TEXTURES;
-
-/// First unused dense slot, or null when the table is full.
-fn findFreeSlot() ?usize {
-    for (0..MAX_TEXTURES) |i| {
-        if (!isValid(imgui_textures[i].idx)) return i;
-    }
-    return null;
+comptime {
+    // The table's invalid-handle sentinel must be bgfx's `kInvalidHandle`.
+    std.debug.assert(tex_table.INVALID_HANDLE == INVALID);
 }
 
 /// Release a slot, destroying the underlying bgfx texture only if this
-/// bridge created it.
+/// bridge created it. Bumps the slot's generation (inside `release`) so any
+/// id minted for the old occupant is now stale.
 fn releaseSlot(slot: usize) void {
-    if (isValid(imgui_textures[slot].idx) and imgui_texture_owned[slot]) {
-        bgfx.destroyTexture(imgui_textures[slot]);
-    }
-    imgui_textures[slot] = .{ .idx = INVALID };
-    imgui_texture_owned[slot] = false;
+    const prev = textures.release(slot) orelse return;
+    if (prev.owned) bgfx.destroyTexture(.{ .idx = prev.handle_idx });
 }
 
-/// Map a dense slot index (0-based) to the ImGui TexID stored in draw data.
-fn slotToTexId(slot: usize) ig.ImTextureID {
-    // +1 so slot 0 never maps to ImTextureID 0 (the "invalid" sentinel).
-    return @as(ig.ImTextureID, @intCast(slot)) + 1;
-}
-
-/// Recover the dense slot index from an ImGui TexID, or null if invalid /
-/// out of range.
-fn texIdToSlot(tex_id: ig.ImTextureID) ?usize {
-    if (tex_id == 0) return null;
-    const slot: usize = @intCast(tex_id - 1);
-    if (slot >= MAX_TEXTURES) return null;
-    return slot;
-}
+/// Once-per-id log of draw commands that referenced a texture id no longer
+/// in the table. Bounded: after `stale_logged` fills, further NEW stale ids
+/// are still skipped safely, just not logged — a host that keeps minting
+/// bad ids is a host bug, and per-frame spam would hide the first (useful)
+/// message. The list never resets; a device-lost/restore cycle is exactly
+/// when stale ids appear, and the first report per id is what matters.
+var stale_logged: [16]u64 = [_]u64{0} ** 16;
+var stale_logged_count: usize = 0;
 
 /// Resolve the bgfx texture handle a draw command references via its TexID.
-/// Returns INVALID if the slot is empty/out of range.
+/// Returns INVALID (and logs once per id) when the id does not resolve —
+/// most often a host lend that did not survive a device loss and was not
+/// re-registered after `engine__surface_restored`.
 fn texIdToHandleIdx(tex_id: ig.ImTextureID) u16 {
-    const slot = texIdToSlot(tex_id) orelse return INVALID;
-    return imgui_textures[slot].idx;
+    const id: u64 = @intCast(tex_id);
+    if (id == 0) return INVALID; // ImTextureID_Invalid: documented "nothing to draw"
+    switch (textures.lookup(id)) {
+        .live => |slot| return textures.handles[slot],
+        .miss => |why| {
+            logStaleOnce(id, why);
+            return INVALID;
+        },
+    }
+}
+
+fn logStaleOnce(id: u64, why: tex_table.Miss) void {
+    for (stale_logged[0..stale_logged_count]) |seen| {
+        if (seen == id) return;
+    }
+    if (stale_logged_count < stale_logged.len) {
+        stale_logged[stale_logged_count] = id;
+        stale_logged_count += 1;
+    } else {
+        return; // list full — stay quiet, still skip the draw
+    }
+    const d = tex_table.TextureTable.decode(id);
+    switch (why) {
+        .stale => std.log.warn(
+            "imgui-bgfx: draw references texture id 0x{x} (slot {d}, gen {d}) whose slot is now gen {d} — " ++
+                "skipped. Lends do not survive device-lost: unregister on engine__surface_lost, " ++
+                "re-register after engine__surface_restored (labelle-imgui#30)",
+            .{ id, d.?.slot, d.?.gen, textures.generation[d.?.slot] },
+        ),
+        .empty => std.log.warn(
+            "imgui-bgfx: draw references texture id 0x{x} (slot {d}, gen {d}) — slot is empty; skipped",
+            .{ id, d.?.slot, d.?.gen },
+        ),
+        .malformed => std.log.warn(
+            "imgui-bgfx: draw references malformed texture id 0x{x} (not minted by this bridge) — skipped",
+            .{id},
+        ),
+    }
 }
 
 fn processTextures(dd: *ig.ImDrawData) void {
@@ -849,17 +878,16 @@ fn createTexture(tex: *ig.ImTextureData) void {
         return;
     }
 
-    // Find the first free DENSE slot — independent of the bgfx handle idx,
-    // which may be any value from the global pool.
-    const slot = findFreeSlot() orelse {
+    // Take the first free DENSE slot — independent of the bgfx handle idx,
+    // which may be any value from the global pool. `owned = true`: we
+    // created it, so we destroy it.
+    const tex_id = textures.insert(handle.idx, true) orelse {
         // Out of dense slots — destroy and bail rather than corrupt the map.
         bgfx.destroyTexture(handle);
         std.log.err("imgui-bgfx: exceeded MAX_TEXTURES ({d})", .{MAX_TEXTURES});
         return;
     };
-    imgui_textures[slot] = handle;
-    imgui_texture_owned[slot] = true; // we created it, so we destroy it
-    ig.ImTextureData_SetTexID(tex, slotToTexId(slot));
+    ig.ImTextureData_SetTexID(tex, @intCast(tex_id));
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_OK);
 }
 
@@ -875,8 +903,8 @@ fn updateTexturePixels(tex: *ig.ImTextureData) void {
     // and leaves TexID/status UNTOUCHED on failure — so a transient
     // createTexture2D failure can't blank the atlas (the old texture stays
     // bound). Destroying the old handle up front would lose it on failure.
-    const old_slot = texIdToSlot(ig.ImTextureData_GetTexID(tex));
     const old_texid = ig.ImTextureData_GetTexID(tex);
+    const old_slot = textures.slotOf(@intCast(old_texid));
 
     createTexture(tex);
 
@@ -890,14 +918,17 @@ fn updateTexturePixels(tex: *ig.ImTextureData) void {
 }
 
 fn destroyTexture(tex: *ig.ImTextureData) void {
-    if (texIdToSlot(ig.ImTextureData_GetTexID(tex))) |slot| releaseSlot(slot);
+    if (textures.slotOf(@intCast(ig.ImTextureData_GetTexID(tex)))) |slot| releaseSlot(slot);
     ig.ImTextureData_SetTexID(tex, 0);
     ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_Destroyed);
 }
 
 fn destroyAllTextures() void {
     // `releaseSlot` skips the bgfx destroy for externally-owned handles —
-    // on shutdown the host still owns those and frees them itself.
+    // on shutdown the host still owns those and frees them itself. Every
+    // occupied slot's generation bumps here, which is what turns a host's
+    // surviving lend id into a detectable stale id (see `texIdToHandleIdx`
+    // and `imgui_bridge_texture_registered`).
     for (0..MAX_TEXTURES) |i| releaseSlot(i);
 }
 
@@ -913,36 +944,65 @@ fn destroyAllTextures() void {
 // keep the C ABI free of bgfx types. The registration is a borrow: the
 // host keeps ownership and must call the unregister entry point before
 // destroying the texture.
+//
+// LIFETIME CONTRACT (labelle-imgui#30): a lend does NOT survive a device
+// loss. `imgui_bridge_invalidate_textures` (which the labelle-bgfx window
+// backend calls before `bgfx.shutdown` on Android TERM_WINDOW) drops every
+// slot — the bridge cannot re-lend a handle it does not own, and bgfx
+// recycles handle indices on re-init anyway. The host must:
+//
+//   1. `imgui_bridge_unregister_texture(id)` on `engine__surface_lost`
+//      (delivered synchronously by labelle-engine >= 2.13.0, BEFORE the
+//      bridge's invalidate pass and before `bgfx.shutdown`), then free its
+//      own texture;
+//   2. re-upload + `imgui_bridge_register_texture(new_idx)` after
+//      `engine__surface_restored` and use the NEW id from then on.
+//
+// If a host keeps drawing with the old id, the generation baked into the
+// id no longer matches the slot (see `tex_table.zig`): the draw is skipped
+// and logged once, and `imgui_bridge_texture_registered(old_id)` returns
+// false — never a silent sample of whatever texture took the slot.
 
 /// Map an existing bgfx texture into the ImGui texture table.
 ///
 /// Returns an `ImTextureID` usable in `ImDrawList::AddImage`, or 0 if the
 /// handle is invalid or the table is full. The bridge will never destroy
-/// this texture.
+/// this texture. The id carries the slot's current generation, so it is
+/// unique against every id previously minted for the same slot.
 export fn imgui_bridge_register_texture(handle_idx: u16) u64 {
     if (!isValid(handle_idx)) return 0;
-    const slot = findFreeSlot() orelse {
+    return textures.insert(handle_idx, false) orelse { // borrowed — host owns it
         std.log.err(
             "imgui-bgfx: no free texture slot to register external handle ({d} in use)",
             .{MAX_TEXTURES},
         );
         return 0;
     };
-    imgui_textures[slot] = .{ .idx = handle_idx };
-    imgui_texture_owned[slot] = false; // borrowed — host owns it
-    return @intCast(slotToTexId(slot));
 }
 
 /// Drop a previously registered external texture. The underlying bgfx
-/// texture is left alone; only the mapping is released. Unknown or
-/// already-released ids are ignored, so this is safe to call twice.
+/// texture is left alone; only the mapping is released. Unknown, stale, or
+/// already-released ids are ignored, so this is safe to call twice — and a
+/// stale id (one minted before a device loss) can never release the slot's
+/// newer occupant, because its generation no longer matches.
 export fn imgui_bridge_unregister_texture(tex_id: u64) void {
-    const slot = texIdToSlot(@intCast(tex_id)) orelse return;
-    if (imgui_texture_owned[slot]) {
+    const slot = textures.slotOf(tex_id) orelse return;
+    if (textures.owned[slot]) {
         // Refuse to unregister a texture ImGui created — that would leak
         // it, since the host has no handle to free.
         std.log.warn("imgui-bgfx: refusing to unregister bridge-owned texture", .{});
         return;
     }
-    imgui_textures[slot] = .{ .idx = INVALID };
+    releaseSlot(slot);
+}
+
+/// Whether `tex_id` still resolves to a live texture in the bridge's table.
+///
+/// The cheap host-side probe for a dropped lend: false after the id's slot
+/// was released by `imgui_bridge_unregister_texture`, by the device-lost
+/// pass (`imgui_bridge_invalidate_textures`), or by shutdown — even if the
+/// slot has since been re-occupied. 0 is never registered. Pure table
+/// lookup, no bgfx call, so it is safe to ask every frame.
+export fn imgui_bridge_texture_registered(tex_id: u64) bool {
+    return textures.isLive(tex_id);
 }

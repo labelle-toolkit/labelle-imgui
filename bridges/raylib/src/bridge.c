@@ -43,3 +43,9 @@ unsigned long long imgui_bridge_register_texture(unsigned short handle_idx) {
 void imgui_bridge_unregister_texture(unsigned long long tex_id) {
     (void)tex_id;
 }
+
+// No lends are ever issued here, so none is ever live (labelle-imgui#30).
+bool imgui_bridge_texture_registered(unsigned long long tex_id) {
+    (void)tex_id;
+    return false;
+}
