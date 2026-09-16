@@ -66,12 +66,27 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
     override_dpi = dpi;
 }
 
-/// Normalized display scale for the adapter's `displayScale()`: the embedder's
-/// override when set, else sokol_app's framebuffer/logical ratio. 1.0 when
-/// neither is known.
+/// Normalized display scale for the adapter's `displayScale()` — the factor a
+/// caller multiplies its metrics by, IN THE COORDINATES IMGUI REPORTS.
+///
+/// On this bridge that is always 1.0, and returning the DPI here was a
+/// double-apply (Codex P1 on #32). `imgui_bridge_begin` hands the same value
+/// to `simgui.newFrame(.dpi_scale = …)`, and sokol_imgui uses it to divide the
+/// framebuffer into LOGICAL units and set `DisplayFramebufferScale` to match —
+/// so ImGui's metrics are already density-normalised before a caller sees
+/// them. A caller that then multiplied by the DPI, as `displayScale()`'s
+/// contract tells it to, rendered every control DPI times too large.
+///
+/// The bgfx bridge is the other half of this: it leaves `DisplaySize` as the
+/// PHYSICAL framebuffer with a 1:1 `DisplayFramebufferScale`, so there the
+/// factor is real and the caller must apply it. Same contract, different
+/// coordinate spaces — which is exactly why the number has to differ.
+///
+/// The density itself is still live on this bridge: `imgui_bridge_begin`
+/// reads it for `newFrame`. This function is about what CALLERS should
+/// multiply by, not about what the display is.
 export fn imgui_bridge_display_scale() f32 {
-    const dpi = if (override_dpi > 0) override_dpi else sapp.dpiScale();
-    return if (dpi > 0) dpi else 1.0;
+    return 1.0;
 }
 
 export fn imgui_bridge_begin() void {

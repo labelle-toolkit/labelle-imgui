@@ -30,13 +30,27 @@ pub fn end() void {
     imgui_bridge_end();
 }
 
-/// Normalized display scale — the OS "UI scale" where 1.0 is a standard-density
-/// screen (desktop content scale, Android density/160, browser
-/// devicePixelRatio). Size HUD/menu metrics by it so a control renders at a
+/// The factor to multiply HUD/menu metrics by so a control renders at a
 /// consistent PHYSICAL size on every device, instead of keying off pixel
-/// counts (which mis-size across DPIs). Reported by the window backend through
-/// the bridge each frame; 1.0 until it does or when a bridge has no source
-/// (raylib). Always > 0.
+/// counts (which mis-size across DPIs). Always > 0.
+///
+/// THE CONTRACT IS "what callers multiply by", not "what the display's
+/// density is" — the two differ per bridge, because the bridges do not all
+/// hand ImGui the same coordinate space:
+///
+///   * bgfx — `DisplaySize` is the PHYSICAL framebuffer with a 1:1
+///     `DisplayFramebufferScale`, so the density is NOT yet applied and this
+///     returns it (desktop content scale, Android density/160, browser
+///     devicePixelRatio). Callers multiply.
+///   * sokol — sokol_imgui converts the framebuffer to LOGICAL units via
+///     `newFrame(.dpi_scale)`, so metrics arrive already normalised and this
+///     returns 1.0. Multiplying again made controls DPI times too large
+///     (Codex P1 on #32).
+///   * raylib — rlImGui exposes no DPI here, so this returns 1.0 and UI
+///     renders 1:1, exactly as before the factor existed.
+///
+/// A caller writes the same code on all three and gets the right physical
+/// size; only the number differs.
 pub fn displayScale() f32 {
     const s = imgui_bridge_display_scale();
     return if (s > 0) s else 1.0;
