@@ -359,10 +359,24 @@ export fn imgui_bridge_invalidate_textures() void {
 var override_w: i32 = 0;
 var override_h: i32 = 0;
 
+/// Normalized display scale the embedder last reported through the `dpi`
+/// slot of `imgui_bridge_set_dims` (1.0 == standard density; the bgfx backend
+/// feeds `window.displayScale()` every frame — labelle-bgfx#93). Unlike the
+/// sokol bridge this is NOT applied to ImGui's own metrics: `DisplaySize`
+/// stays the physical framebuffer with a 1:1 `DisplayFramebufferScale`, and
+/// game UI reads the factor via the adapter's `displayScale()` to size itself.
+var display_scale: f32 = 1.0;
+
 export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
-    _ = dpi;
     override_w = w;
     override_h = h;
+    if (dpi > 0) display_scale = dpi;
+}
+
+/// The last `dpi` handed to `imgui_bridge_set_dims`, 1.0 until an embedder
+/// reports one. Read through the adapter's `displayScale()`.
+export fn imgui_bridge_display_scale() f32 {
+    return display_scale;
 }
 
 // ── Input feed (mouse / touch) ─────────────────────────────────────────

@@ -66,6 +66,14 @@ export fn imgui_bridge_set_dims(w: i32, h: i32, dpi: f32) void {
     override_dpi = dpi;
 }
 
+/// Normalized display scale for the adapter's `displayScale()`: the embedder's
+/// override when set, else sokol_app's framebuffer/logical ratio. 1.0 when
+/// neither is known.
+export fn imgui_bridge_display_scale() f32 {
+    const dpi = if (override_dpi > 0) override_dpi else sapp.dpiScale();
+    return if (dpi > 0) dpi else 1.0;
+}
+
 export fn imgui_bridge_begin() void {
     var w = if (override_w > 0) override_w else sapp.width();
     var h = if (override_h > 0) override_h else sapp.height();

@@ -26,6 +26,13 @@ void imgui_bridge_shutdown(void) {
     rlImGuiShutdown();
 }
 
+// Normalized display scale for the adapter's `displayScale()`. rlImGui does
+// not expose the window's DPI here, so this bridge reports standard density;
+// UI sized against it renders 1:1, exactly as before the factor existed.
+float imgui_bridge_display_scale(void) {
+    return 1.0f;
+}
+
 // External textures — not supported on this bridge.
 //
 // rlImGui owns the ImTextureID mapping itself (a raylib Texture2D id is

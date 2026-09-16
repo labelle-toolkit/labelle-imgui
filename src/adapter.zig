@@ -12,6 +12,7 @@ extern fn imgui_bridge_shutdown() void;
 extern fn imgui_bridge_register_texture(handle_idx: u16) u64;
 extern fn imgui_bridge_unregister_texture(tex_id: u64) void;
 extern fn imgui_bridge_texture_registered(tex_id: u64) bool;
+extern fn imgui_bridge_display_scale() f32;
 
 pub fn init() void {
     imgui_bridge_setup(true);
@@ -27,6 +28,18 @@ pub fn begin() void {
 
 pub fn end() void {
     imgui_bridge_end();
+}
+
+/// Normalized display scale — the OS "UI scale" where 1.0 is a standard-density
+/// screen (desktop content scale, Android density/160, browser
+/// devicePixelRatio). Size HUD/menu metrics by it so a control renders at a
+/// consistent PHYSICAL size on every device, instead of keying off pixel
+/// counts (which mis-size across DPIs). Reported by the window backend through
+/// the bridge each frame; 1.0 until it does or when a bridge has no source
+/// (raylib). Always > 0.
+pub fn displayScale() f32 {
+    const s = imgui_bridge_display_scale();
+    return if (s > 0) s else 1.0;
 }
 
 pub fn wantsMouse() bool {
