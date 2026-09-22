@@ -229,7 +229,10 @@ fn ensureRenderResources() void {
     const vs_data: []const u8, const fs_data: []const u8 = switch (renderer) {
         .Metal => .{ &shaders_data.vs_sprite_mtl, &shaders_data.fs_sprite_mtl },
         .Vulkan => .{ &shaders_data.vs_sprite_spv, &shaders_data.fs_sprite_spv },
-        .OpenGL, .OpenGLES => .{ &shaders_data.vs_sprite_glsl, &shaders_data.fs_sprite_glsl },
+        // GLES (Android, WebGL2) needs the ESSL variants: since bgfx API 161
+        // the desktop blob is GLSL 330 (SPIRV-Cross), which is not valid ESSL.
+        .OpenGLES => .{ &shaders_data.vs_sprite_essl, &shaders_data.fs_sprite_essl },
+        .OpenGL => .{ &shaders_data.vs_sprite_glsl, &shaders_data.fs_sprite_glsl },
         // `.Noop` means bgfx isn't initialized yet (getRendererType before
         // bgfx.init). NOT an error — return silently so the lazy retry in
         // `imgui_bridge_begin` picks it up once the window backend has run
@@ -602,7 +605,7 @@ export fn imgui_bridge_end() void {
         0, 0, 0, 1,
     };
     bgfx.setViewTransform(IMGUI_VIEW_ID, &identity, &ortho);
-    bgfx.setViewRect(IMGUI_VIEW_ID, 0, 0, fb_w, fb_h);
+    bgfx.setViewRect(IMGUI_VIEW_ID, 0, 0, fb_w, fb_h, 0.0, 1.0); // API 161: + min/max depth
     // No clear: the imgui overlay draws on top of view 0's already-rendered
     // scene. setViewMode sequential keeps draw order stable within the view.
     bgfx.setViewMode(IMGUI_VIEW_ID, .Sequential);
