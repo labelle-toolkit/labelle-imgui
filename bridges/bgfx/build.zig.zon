@@ -19,8 +19,13 @@
         // errors (the backend and this bridge both pull zbgfx into the same
         // game binary; they must resolve to one module).
         .zbgfx = .{
-            .url = "https://codeberg.org/cyberegoorg/zbgfx/archive/8f01ea0ab6.tar.gz",
-            .hash = "zbgfx-0.12.0-Sm4IxEuHywb45XqoIhv3iEOxKXc01aKNNVjI63FHvqFw",
+            // bgfx API 161: the labelle-toolkit fork at the zbgfx#1 merge, the
+            // SAME pin as labelle-bgfx v0.24.0. A different zbgfx here compiles
+            // this bridge against other bgfx headers than the game links:
+            // API 161 shifted `TextureFormat` (RGBA8 71 -> 74), so the font
+            // atlas aborted in createTexture2D, and v11 shaders failed to load.
+            .url = "https://github.com/labelle-toolkit/zbgfx/archive/ba2786f11b8042afc2f90e10b2a6432bd24befae.tar.gz",
+            .hash = "zbgfx-0.12.0-Sm4IxMnIDAdzAesVbziV41cUrt0j8cBIG8xGe7UL1fpY",
         },
         // emsdk is needed at WASM build time so we can plumb the sysroot
         // include path through to the cimgui C++ compile (imgui.h pulls in
