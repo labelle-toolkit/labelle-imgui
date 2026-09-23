@@ -128,8 +128,16 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const blend_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/blend.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
     const test_step = b.step("test", "Run bgfx bridge unit tests");
     test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
+    test_step.dependOn(&b.addRunArtifact(blend_tests).step);
 }
 
 /// Locate the Android NDK sysroot — ported verbatim from the sokol bridge

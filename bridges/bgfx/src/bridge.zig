@@ -49,6 +49,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const bgfx = @import("zbgfx").bgfx;
 const shaders_data = @import("shaders.zig");
+const blend = @import("blend.zig");
 const ig = @import("cimgui");
 
 const is_emscripten = builtin.target.os.tag == .emscripten;
@@ -170,23 +171,9 @@ fn nowNs() i128 {
 /// re-attempt (and re-log) a doomed init every frame, forever.
 var render_disabled: bool = false;
 
-/// Straight-alpha "over" (matches labelle-bgfx's STATE_BLEND_ALPHA): colour
-/// blends by the source alpha; the ALPHA channel composites as coverage
-/// (`One, InvSrcAlpha`), so imgui drawn over an opaque frame leaves it opaque.
-///
-/// Alpha used to blend like colour (`SrcAlpha, InvSrcAlpha` -> srcA² + ...),
-/// leaving translucent panels with framebuffer alpha < 1. The web canvas has an
-/// alpha channel (premultipliedAlpha: false), so the page behind the canvas
-/// showed through every translucent imgui panel (menus, HUD bars). Colour is
-/// unchanged, so desktop/Android pixels are identical.
-/// BGFX_STATE_BLEND_FUNC_SEPARATE(srcRGB,dstRGB,srcA,dstA) =
-///   (srcRGB | (dstRGB<<4)) | ((srcA | (dstA<<4)) << 8)
+/// Straight-alpha "over"; see `blend.zig` for why alpha composites as coverage.
 fn blendAlpha() u64 {
-    const src_rgb = bgfx.StateFlags_BlendSrcAlpha;
-    const dst_rgb = bgfx.StateFlags_BlendInvSrcAlpha;
-    const src_a = bgfx.StateFlags_BlendOne;
-    const dst_a = bgfx.StateFlags_BlendInvSrcAlpha;
-    return (src_rgb | (dst_rgb << 4)) | ((src_a | (dst_a << 4)) << 8);
+    return blend.alphaOver(bgfx);
 }
 
 fn isValid(idx: u16) bool {
