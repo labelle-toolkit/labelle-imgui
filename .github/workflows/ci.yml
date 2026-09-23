@@ -10,16 +10,24 @@ on:
   pull_request:
     branches: [main]
 
+# Checkout + one public-API read (the pins job) need nothing more.
+permissions:
+  contents: read
+
 jobs:
   # The root package: build + unit tests.
   root:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: '0.16.0'
-      - name: Build + test
+      # `test` also compiles the adapter (src/adapter_compile_check.zig):
+      # nothing else in this repo imports it.
+      - name: Build + test (+ adapter compile check)
         run: zig build test --summary all
 
   # Each bridge is its own package; build all three so an upstream API change
@@ -32,8 +40,10 @@ jobs:
       matrix:
         bridge: [bgfx, raylib, sokol]
     steps:
-      - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: '0.16.0'
       - name: Install native deps (raylib/sokol/bgfx)
@@ -51,13 +61,16 @@ jobs:
         working-directory: bridges/bgfx
         run: zig build test --summary all
 
-  # Pins that must agree across packages/repos, or a game links two copies of a
+  # Pins that must agree across packages/repos (every shared dependency:
+  # cimgui, sokol, emsdk, ...), or a game links two copies of a
   # dependency (see tools/check_pins.py). Each package builds fine on its own
   # when these drift, so only this check catches it.
   pins:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Check shared pins
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

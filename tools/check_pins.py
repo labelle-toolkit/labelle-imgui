@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Pins that must agree, or a game ends up with two copies of a dependency.
 
-1. Every `.cimgui` pin in this repo is the same revision. Zig keys packages by
-   hash, so a mismatch compiles two cimgui artifacts into one game binary.
+1. Every dependency declared by more than one package in this repo (cimgui,
+   sokol, emsdk, ...) uses the same hash. Zig keys packages by hash, so a
+   mismatch compiles two copies into one game binary, and each package still
+   builds fine on its own.
 2. The bgfx bridge's `.zbgfx` pin equals the one in labelle-bgfx's latest
    release. The bridge compiles against its own zbgfx headers but the game
    links the backend's bgfx; when they drifted (bgfx API 142 vs 161, 2026-09-22)
@@ -41,16 +43,22 @@ def get(url):
 
 failures = []
 
-# 1. cimgui pins agree.
-cimgui = {}
+# 1. Shared dependencies agree across every package in the repo.
+deps = {}  # name -> {zon path: hash}
 for path in [os.path.join(ROOT, 'build.zig.zon')] + sorted(glob.glob(os.path.join(ROOT, 'bridges', '*', 'build.zig.zon'))):
-    h = dep_hash(open(path).read(), 'cimgui')
-    if h:
-        cimgui[os.path.relpath(path, ROOT)] = h
-if len(set(cimgui.values())) > 1:
-    failures.append('cimgui pins disagree:\n' + '\n'.join(f'  {p}: {h}' for p, h in cimgui.items()))
-else:
-    print(f'ok: {len(cimgui)} cimgui pins agree ({next(iter(cimgui.values()))})')
+    text = re.sub(r'//[^\n]*', '', open(path).read())  # drop comments
+    for m in re.finditer(r'\.(@?"?[A-Za-z_][\w-]*"?)\s*=\s*\.\{([^{}]*?)\}', text):
+        h = re.search(r'\.hash\s*=\s*"([^"]+)"', m.group(2))
+        if h:
+            deps.setdefault(m.group(1), {})[os.path.relpath(path, ROOT)] = h.group(1)
+shared = {name: pins for name, pins in deps.items() if len(pins) > 1}
+for name, pins in sorted(shared.items()):
+    if len(set(pins.values())) > 1:
+        failures.append(f'{name} pins disagree:\n' + '\n'.join(f'  {p}: {h}' for p, h in sorted(pins.items())))
+    else:
+        print(f'ok: {name} pinned identically in {len(pins)} packages')
+if not shared:
+    failures.append('no shared dependencies found: the zon parser is broken')
 
 # 2. bgfx bridge zbgfx == labelle-bgfx latest release.
 bridge = dep_hash(open(os.path.join(ROOT, 'bridges', 'bgfx', 'build.zig.zon')).read(), 'zbgfx')

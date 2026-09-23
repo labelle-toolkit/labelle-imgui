@@ -37,6 +37,20 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    const test_step = b.step("test", "Run labelle-imgui unit tests");
+    // ── Compile check for the adapter ──────────────────────────────────
+    // Nothing else in this repo imports `labelle_imgui`, so without this the
+    // adapter was never compiled here (see src/adapter_compile_check.zig).
+    const adapter_check_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter_compile_check.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    adapter_check_mod.addImport("labelle_imgui", gui_mod);
+    const adapter_check = b.addObject(.{ .name = "adapter_compile_check", .root_module = adapter_check_mod });
+    const check_step = b.step("check", "Compile the adapter (every public declaration analysed)");
+    check_step.dependOn(&adapter_check.step);
+
+    const test_step = b.step("test", "Run labelle-imgui unit tests (and the adapter compile check)");
     test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
+    test_step.dependOn(&adapter_check.step);
 }
