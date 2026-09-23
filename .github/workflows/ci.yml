@@ -1,0 +1,64 @@
+name: CI
+
+# labelle-imgui had no CI at all: a P1 (the sokol double-apply) reached a
+# release candidate, and the bgfx bridge's API 161 port was only ever built
+# locally. Runs on every push (a workflow added in a PR only gates via `push`
+# until it lands on main) and on PRs targeting main.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  # The root package: build + unit tests.
+  root:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - name: Build + test
+        run: zig build test --summary all
+
+  # Each bridge is its own package; build all three so an upstream API change
+  # (e.g. a bgfx API bump) fails here, not in a game. The bgfx bridge also has
+  # unit tests.
+  bridges:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        bridge: [bgfx, raylib, sokol]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - name: Install native deps (raylib/sokol/bgfx)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1-mesa-dev libx11-dev libxcursor-dev libxrandr-dev \
+            libxinerama-dev libxi-dev libxext-dev libxfixes-dev \
+            libxrender-dev libwayland-dev libxkbcommon-dev libasound2-dev
+      - name: Build bridges/${{ matrix.bridge }}
+        working-directory: bridges/${{ matrix.bridge }}
+        run: zig build --summary all
+      - name: Test bridges/bgfx
+        if: matrix.bridge == 'bgfx'
+        working-directory: bridges/bgfx
+        run: zig build test --summary all
+
+  # Pins that must agree across packages/repos, or a game links two copies of a
+  # dependency (see tools/check_pins.py). Each package builds fine on its own
+  # when these drift, so only this check catches it.
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shared pins
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/check_pins.py
