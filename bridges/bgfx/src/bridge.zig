@@ -49,6 +49,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const bgfx = @import("zbgfx").bgfx;
 const shaders_data = @import("shaders.zig");
+const blend = @import("blend.zig");
 const ig = @import("cimgui");
 
 const is_emscripten = builtin.target.os.tag == .emscripten;
@@ -170,13 +171,9 @@ fn nowNs() i128 {
 /// re-attempt (and re-log) a doomed init every frame, forever.
 var render_disabled: bool = false;
 
-/// Alpha-blend state (matches the bgfx gfx backend's STATE_BLEND_ALPHA).
-/// BGFX_STATE_BLEND_FUNC_SEPARATE(srcRGB,dstRGB,srcA,dstA) =
-///   (srcRGB | (dstRGB<<4)) | ((srcA | (dstA<<4)) << 8)
+/// Straight-alpha "over"; see `blend.zig` for why alpha composites as coverage.
 fn blendAlpha() u64 {
-    const src = bgfx.StateFlags_BlendSrcAlpha;
-    const dst = bgfx.StateFlags_BlendInvSrcAlpha;
-    return (src | (dst << 4)) | ((src | (dst << 4)) << 8);
+    return blend.alphaOver(bgfx);
 }
 
 fn isValid(idx: u16) bool {
