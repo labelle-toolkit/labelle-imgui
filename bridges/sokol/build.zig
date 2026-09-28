@@ -159,6 +159,15 @@ pub fn build(b: *std.Build) void {
                 const inc: std.Build.LazyPath = .{
                     .cwd_relative = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM"),
                 };
+                // sokol-zig already put ITS package's sysroot on sokol_clib. If
+                // that package was activated by an earlier build, the header
+                // search would find it before ours and mix two SDKs, so it is
+                // replaced, not merely followed, by the external sysroot.
+                const pkg_sysroot = sokol_emsdk.path("upstream/emscripten/cache/sysroot/include").getPath(b);
+                if (removeSystemIncludeDir(sokol_artifact.root_module, pkg_sysroot) == 0) std.debug.panic(
+                    "emsdk: a valid EMSDK is set, but sokol-zig's emsdk sysroot include was not found on sokol_clib, so it cannot be replaced (did the sokol pin change how it adds it?)",
+                    .{},
+                );
                 sokol_artifact.root_module.addSystemIncludePath(inc);
                 cimgui_artifact.root_module.addSystemIncludePath(inc);
                 const removed = removeSokolEmsdkSetup(&sokol_artifact.step, &sokol_emsdk_scripts);
@@ -263,6 +272,30 @@ fn removeSokolEmsdkSetup(step: *std.Build.Step, scripts: []const []const u8) usi
     while (i < step.dependencies.items.len) {
         if (sokolEmsdkSetupKind(step.owner, step.dependencies.items[i], scripts) != null) {
             _ = step.dependencies.orderedRemove(i);
+            removed += 1;
+        } else i += 1;
+    }
+    return removed;
+}
+
+/// Remove every `-isystem` entry of `module` that resolves to `abs_path`.
+/// Only source/dependency/absolute paths are resolved: a generated path can't be
+/// read at configure time, and sokol-zig's sysroot is a dependency path.
+/// Returns how many entries were removed.
+fn removeSystemIncludeDir(module: *std.Build.Module, abs_path: []const u8) usize {
+    const b = module.owner;
+    var removed: usize = 0;
+    var i: usize = 0;
+    while (i < module.include_dirs.items.len) {
+        const match = switch (module.include_dirs.items[i]) {
+            .path_system => |lp| switch (lp) {
+                .src_path, .dependency, .cwd_relative => std.mem.eql(u8, lp.getPath(b), abs_path),
+                .generated => false,
+            },
+            else => false,
+        };
+        if (match) {
+            _ = module.include_dirs.orderedRemove(i);
             removed += 1;
         } else i += 1;
     }
