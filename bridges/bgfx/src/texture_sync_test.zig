@@ -14,6 +14,10 @@ const FakeGpu = struct {
     partial_uploads: usize = 0,
     next_handle: u16 = 7,
     fail_create: bool = false,
+    /// Handles uploaded to during the current frame, and how often a
+    /// handle got a second upload in one frame (must stay 0).
+    frame_uploads: HandleSet = .{},
+    double_uploads: usize = 0,
     last_w: u16 = 0,
     last_h: u16 = 0,
 
@@ -27,16 +31,33 @@ const FakeGpu = struct {
     }
 
     pub fn upload(self: *FakeGpu, handle: u16, r: texture_sync.Region) void {
-        _ = handle;
+        // bgfx takes one update per texture per frame (Codex on #43).
+        if (self.frame_uploads.get(handle)) |_| self.double_uploads += 1;
+        self.frame_uploads.put(handle) catch unreachable;
         self.uploads += 1;
-        if (r.w != self.last_w or r.h != self.last_h) self.partial_uploads += 1;
-        // The region slice must cover exactly the rows it describes.
-        std.debug.assert(r.pixels.len == @as(usize, r.pitch) * (r.h - 1) + @as(usize, r.w) * 4);
+        if (r.h != self.last_h) self.partial_uploads += 1;
+        // Full-width rows, tightly packed.
+        std.debug.assert(r.w == self.last_w);
+        std.debug.assert(r.pixels.len == @as(usize, r.w) * 4 * r.h);
     }
 
     pub fn destroy(self: *FakeGpu, handle: u16) void {
         _ = handle;
         self.destroys += 1;
+    }
+};
+
+const HandleSet = struct {
+    items: [8]u16 = undefined,
+    len: usize = 0,
+    fn get(self: *const HandleSet, h: u16) ?void {
+        for (self.items[0..self.len]) |x| if (x == h) return {};
+        return null;
+    }
+    fn put(self: *HandleSet, h: u16) !void {
+        if (self.len == self.items.len) return error.Full;
+        self.items[self.len] = h;
+        self.len += 1;
     }
 };
 
@@ -67,6 +88,7 @@ const Harness = struct {
     /// One HUD frame: rectangles + text on the foreground draw list, no
     /// windows, no font pushes. `text` is what the HUD prints this frame.
     fn hudFrame(self: *Harness, text: [:0]const u8) void {
+        self.gpu.frame_uploads = .{};
         ig.igNewFrame();
         const dl = ig.igGetForegroundDrawList();
         ig.ImDrawList_AddRectFilled(dl, .{ .x = 10, .y = 10 }, .{ .x = 200, .y = 40 }, 0x80000000);
@@ -122,6 +144,7 @@ test "new glyphs sub-upload into the same atlas texture, no re-create (#28)" {
     // Glyphs never drawn before: ImGui bakes them and queues WantUpdates.
     h.hudFrame("QUEST: wyvern @ 42% {}");
     try std.testing.expect(h.gpu.partial_uploads > 0); // the WantUpdates path ran
+    try std.testing.expectEqual(@as(usize, 0), h.gpu.double_uploads);
     try std.testing.expect(h.gpu.uploads > uploads_before);
     try std.testing.expectEqual(@as(usize, 1), h.gpu.creates);
     try std.testing.expectEqual(@as(usize, 0), h.gpu.destroys);

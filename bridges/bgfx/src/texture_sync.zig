@@ -16,7 +16,7 @@
 //! between two table slots and gave it a new `TexID` every time.
 //!
 //! Now a texture is created once, MUTABLE (no initial memory), and every
-//! `WantUpdates` uploads just the queued rectangles into the SAME handle.
+//! `WantUpdates` uploads the rows holding the queued rectangles into the SAME handle, once.
 //! The `TexID` stays stable; the only paths that create a texture are
 //! `WantCreate` and an update for a texture we have no live slot for.
 const std = @import("std");
@@ -26,15 +26,15 @@ const tex_table = @import("tex_table.zig");
 
 pub const TextureTable = tex_table.TextureTable;
 
-/// One sub-rectangle upload. `pixels` points at the rectangle's first
-/// pixel inside ImGui's full texture buffer; rows are `pitch` bytes apart
-/// and the slice covers exactly `pitch * (h - 1) + w * 4` bytes.
+/// One upload: a band of FULL-WIDTH rows `y .. y + h` of the texture.
+/// Full-width rows are contiguous in ImGui's buffer, so `pixels` is tightly
+/// packed (`w * 4 * h` bytes) and the GPU side needs no row pitch — bgfx's
+/// `UINT16_MAX` "compute from width" pitch works for any texture width
+/// (a 16384-wide RGBA row is 65536 bytes, one more than a u16 pitch holds).
 pub const Region = struct {
-    x: u16,
     y: u16,
     w: u16,
     h: u16,
-    pitch: u16,
     pixels: []const u8,
 };
 
@@ -113,17 +113,17 @@ pub fn Sync(comptime Gpu: type) type {
                 ig.ImTextureData_SetTexID(tex, 0);
                 return self.create(tex);
             }
-            const handle = self.table.handles[slot.?];
-            const n: usize = @intCast(tex.*.Updates.Size);
-            if (n == 0) {
-                self.gpu.upload(handle, fullRegion(tex));
-            } else {
-                const rects: [*]const ig.ImTextureRect = @ptrCast(tex.*.Updates.Data);
-                for (rects[0..n]) |r| {
-                    if (r.w == 0 or r.h == 0) continue;
-                    self.gpu.upload(handle, region(tex, r.x, r.y, r.w, r.h));
-                }
-            }
+            // ONE upload per request covering every queued rect: bgfx takes
+            // at most one update per texture per frame, so uploading each
+            // `Updates[]` rect separately could drop all but one.
+            // `UpdateRect` is ImGui's bounding box of the queued rects.
+            const r = tex.*.UpdateRect;
+            const band = if (r.w == 0 or r.h == 0 or
+                @as(u32, r.y) + r.h > @as(u32, @intCast(tex.*.Height)))
+                fullRegion(tex)
+            else
+                rows(tex, r.y, r.h);
+            self.gpu.upload(self.table.handles[slot.?], band);
             ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_OK);
         }
 
@@ -136,16 +136,19 @@ pub fn Sync(comptime Gpu: type) type {
 }
 
 fn fullRegion(tex: *ig.ImTextureData) Region {
-    return region(tex, 0, 0, @intCast(tex.*.Width), @intCast(tex.*.Height));
+    return rows(tex, 0, @intCast(tex.*.Height));
 }
 
-fn region(tex: *ig.ImTextureData, x: u16, y: u16, w: u16, h: u16) Region {
-    const bpp: usize = @intCast(tex.*.BytesPerPixel);
-    const pitch: usize = @as(usize, @intCast(tex.*.Width)) * bpp;
+fn rows(tex: *ig.ImTextureData, y: u16, h: u16) Region {
+    const pitch: usize = @as(usize, @intCast(tex.*.Width)) * @as(usize, @intCast(tex.*.BytesPerPixel));
     const base: [*]const u8 = @ptrCast(ig.ImTextureData_GetPixels(tex));
-    const start = @as(usize, y) * pitch + @as(usize, x) * bpp;
-    const len = pitch * (@as(usize, h) - 1) + @as(usize, w) * bpp;
-    return .{ .x = x, .y = y, .w = w, .h = h, .pitch = @intCast(pitch), .pixels = base[start .. start + len] };
+    const start = @as(usize, y) * pitch;
+    return .{
+        .y = y,
+        .w = @intCast(tex.*.Width),
+        .h = h,
+        .pixels = base[start .. start + pitch * @as(usize, h)],
+    };
 }
 
 /// The host test drives the failure paths on purpose, and the test runner

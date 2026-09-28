@@ -796,7 +796,8 @@ const BgfxGpu = struct {
     /// reuse its pixel buffer as soon as this returns.
     pub fn upload(_: *BgfxGpu, handle: u16, r: texture_sync.Region) void {
         const mem = bgfx.copy(r.pixels.ptr, @intCast(r.pixels.len));
-        bgfx.updateTexture2D(.{ .idx = handle }, 0, 0, r.x, r.y, r.w, r.h, mem, r.pitch);
+        // Pitch UINT16_MAX = tightly packed, computed by bgfx from the width.
+        bgfx.updateTexture2D(.{ .idx = handle }, 0, 0, 0, r.y, r.w, r.h, mem, std.math.maxInt(u16));
     }
 
     pub fn destroy(_: *BgfxGpu, handle: u16) void {
