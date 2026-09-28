@@ -156,7 +156,8 @@ pub fn build(b: *std.Build) void {
 
     // ── Unit tests ─────────────────────────────────────────────────────
     // `bridge.zig` itself needs a live bgfx + cimgui link and cannot run
-    // headless, but the texture slot table it builds on (`tex_table.zig`:
+    // headless; its ImGui texture-request handling (`texture_sync.zig`) runs
+    // below against real ImGui frames and a fake GPU. The texture slot table it builds on (`tex_table.zig`:
     // id encode/decode, generation bumps, stale-id rejection — the #30
     // fix) is pure Zig, so it EXECUTES here on the host. Pinned to the host
     // target so `zig build test` still runs under `-Dtarget=` cross builds.
@@ -183,7 +184,23 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // ImGui texture-request handling (#28: the font atlas was re-created
+    // every frame). Runs REAL ImGui frames against a counting fake GPU, so
+    // it links a host-target cimgui (no bgfx needed).
+    const dep_cimgui_host = b.dependency("cimgui", .{
+        .target = host_target,
+        .optimize = optimize,
+    });
+    const texture_sync_mod = b.createModule(.{
+        .root_source_file = b.path("src/texture_sync_test.zig"),
+        .target = host_target,
+        .optimize = optimize,
+    });
+    texture_sync_mod.addImport("cimgui", dep_cimgui_host.module(cimgui_conf.module_name));
+    texture_sync_mod.linkLibrary(dep_cimgui_host.artifact(cimgui_conf.clib_name));
+    const texture_sync_tests = b.addTest(.{ .root_module = texture_sync_mod });
     const test_step = b.step("test", "Run bgfx bridge unit tests");
+    test_step.dependOn(&b.addRunArtifact(texture_sync_tests).step);
     test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
     test_step.dependOn(&b.addRunArtifact(blend_tests).step);
     test_step.dependOn(&b.addRunArtifact(emsdk_source_tests).step);
