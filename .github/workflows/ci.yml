@@ -31,8 +31,8 @@ jobs:
         run: zig build test --summary all
 
   # Each bridge is its own package; build all three so an upstream API change
-  # (e.g. a bgfx API bump) fails here, not in a game. The bgfx bridge also has
-  # unit tests.
+  # (e.g. a bgfx API bump) fails here, not in a game. The bgfx and sokol
+  # bridges also have unit tests.
   bridges:
     runs-on: ubuntu-latest
     strategy:
@@ -56,31 +56,38 @@ jobs:
       - name: Build bridges/${{ matrix.bridge }}
         working-directory: bridges/${{ matrix.bridge }}
         run: zig build --summary all
-      - name: Test bridges/bgfx
-        if: matrix.bridge == 'bgfx'
-        working-directory: bridges/bgfx
+      - name: Test bridges/${{ matrix.bridge }}
+        if: matrix.bridge != 'raylib'
+        working-directory: bridges/${{ matrix.bridge }}
         run: zig build test --summary all
 
-  # The bgfx bridge on wasm honours a valid EMSDK and never activates the
-  # emsdk Zig package (labelle-imgui#37, same as labelle-bgfx#159).
-  # labelle-web 0.3's provider installs its own emsdk and exports EMSDK,
-  # EM_CONFIG and PATH; before #37 this build still ran `emsdk
-  # install/activate latest` on the package copy, a second ~1.5 GB download
-  # per cold runner. Asserts the MECHANISM, not only a green build:
+  # The bgfx and sokol bridges on wasm honour a valid EMSDK and never
+  # activate an emsdk Zig package (bgfx: labelle-imgui#37, same as
+  # labelle-bgfx#159; sokol: #39, which also drops sokol-zig's own
+  # install/activate steps from sokol_clib). labelle-web 0.3's provider
+  # installs its own emsdk and exports EMSDK, EM_CONFIG and PATH; before
+  # these fixes the build still ran `emsdk install/activate latest` on a
+  # package copy, a second ~1.5 GB download per cold runner. Asserts the
+  # MECHANISM, not only a green build:
   #   1. `-Demsdk_expect` fails the configure unless the named source was
   #      chosen: with EMSDK unset it must pick the package (and refuse
   #      `external`); with a valid EMSDK it must refuse `package`;
   #   2. the build summary shows no `emsdk install/activate (zig-pkg emsdk)`;
   #   3. no emsdk package under zig-pkg/ was installed or activated (no
   #      `upstream/`, no `.emscripten`). zig-pkg is not cached here.
-  bgfx-bridge-wasm-external-emsdk:
+  bridge-wasm-external-emsdk:
+    name: ${{ matrix.bridge }}-bridge-wasm-external-emsdk
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        bridge: [bgfx, sokol]
     env:
       EXT_EMSDK_VERSION: 4.0.9
     defaults:
       run:
-        working-directory: bridges/bgfx
+        working-directory: bridges/${{ matrix.bridge }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -146,7 +153,8 @@ jobs:
           status=$?
           cat build.log
           [ "$status" -eq 0 ] || { echo "FAIL: build exited $status"; exit 1; }
-          [ -s zig-out/lib/libbgfx_imgui_bridge.a ] || { echo "FAIL: no bridge archive"; exit 1; }
+          archive="zig-out/lib/lib${{ matrix.bridge }}_imgui_bridge.a"
+          [ -s "$archive" ] || { echo "FAIL: no bridge archive at $archive"; exit 1; }
       - name: Assert no zig-pkg emsdk install/activate ran
         run: |
           set -euo pipefail
@@ -155,9 +163,11 @@ jobs:
             exit 1
           fi
           fail=0
+          seen=0
           shopt -s nullglob
           for dir in zig-pkg/*/; do
             [ -f "$dir/emsdk.py" ] || continue
+            seen=$((seen + 1))
             echo "emsdk package present (fetched, not necessarily used): $dir"
             for marker in upstream .emscripten; do
               if [ -e "$dir$marker" ]; then
@@ -166,6 +176,12 @@ jobs:
               fi
             done
           done
+          # sokol-zig's emsdk dependency is not lazy, so it is always fetched:
+          # the check above must have looked at it, or it proved nothing.
+          if [ "${{ matrix.bridge }}" = sokol ] && [ "$seen" -eq 0 ]; then
+            echo "FAIL: sokol-zig's emsdk package was not found under zig-pkg/"
+            fail=1
+          fi
           exit $fail
 
   # Pins that must agree across packages/repos (every shared dependency:
@@ -182,3 +198,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 tools/check_pins.py
+      # The bgfx and sokol bridges each carry a copy of the emsdk selection
+      # helper (#37, #39); a fix to one must reach the other.
+      - name: emsdk_source.zig copies are identical
+        run: cmp bridges/bgfx/emsdk_source.zig bridges/sokol/emsdk_source.zig

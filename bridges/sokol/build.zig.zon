@@ -32,7 +32,8 @@
         // in <assert.h> et al). Mirrors the pin in
         // `labelle-assembler/backends/sokol/build.zig.zon` — both deps
         // must resolve to the same emsdk version. Lazy so non-WASM
-        // platforms don't fetch it. See labelle-cli#197.
+        // platforms don't fetch it. See labelle-cli#197. Not fetched either
+        // when a valid EMSDK supplies the sysroot (#39).
         .emsdk = .{
             .url = "git+https://github.com/emscripten-core/emsdk#4.0.9",
             .hash = "N-V-__8AAJl1DwBezhYo_VE6f53mPVm00R-Fk28NPW7P14EQ",
@@ -42,6 +43,10 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        // Imported by build.zig: which emsdk a wasm build uses, and how to
+        // find sokol-zig's emsdk setup steps (#39).
+        "emsdk_source.zig",
+        "sokol_emsdk_setup.zig",
         "src",
     },
 }
