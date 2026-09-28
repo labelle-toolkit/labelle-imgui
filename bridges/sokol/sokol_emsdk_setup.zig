@@ -74,24 +74,60 @@ pub fn outcome(setup_removed: usize, include_removed: usize, sokol_pkg_activated
     return .taken_over;
 }
 
+pub const SetupPlan = enum {
+    /// Another package building the same `sokol_clib` already attached the
+    /// package emsdk's setup: wait on THAT step. Creating a second one would
+    /// run two `emsdk install` commands on one directory at once.
+    reuse,
+    /// First caller, package not activated: create the setup and attach it.
+    create,
+    /// Already activated: nothing to run.
+    none,
+};
+
+/// How to get the package emsdk's setup step for `sokol_clib`.
+pub fn setupPlan(already_attached: bool, package_activated: bool) SetupPlan {
+    if (already_attached) return .reuse;
+    return if (package_activated) .none else .create;
+}
+
 // ── build-graph side (configure time) ────────────────────────────────────
 
+pub const Result = struct {
+    outcome: Outcome,
+    /// The package emsdk's install/activate step that `sokol_clib` now waits
+    /// on (null for an external EMSDK, or an already-activated package). Every
+    /// other C/C++ compile that uses the same sysroot must wait on it too.
+    setup: ?*std.Build.Step,
+};
+
 /// Remove sokol-zig's emsdk setup and sysroot from `sokol_clib`, then give it
-/// `sysroot` (the chosen emsdk's `cache/sysroot/include`) and make it wait for
-/// `setup` (that emsdk's own install/activate, or null when there is nothing to
-/// run). `dep_sokol` is the `b.dependency("sokol", ...)` that built `sokol_clib`.
+/// `sysroot` (the chosen emsdk's `cache/sysroot/include`). With the package
+/// source (`package_emsdk` non-null), `sokol_clib` also waits for that
+/// package's own install/activate: the one another package already attached to
+/// this shared `sokol_clib` if there is one, else a new one (see `setupPlan`).
+/// `dep_sokol` is the `b.dependency("sokol", ...)` that built `sokol_clib`.
 pub fn takeOver(
     b: *std.Build,
     dep_sokol: *std.Build.Dependency,
     sokol_clib: *std.Build.Step.Compile,
     sysroot: std.Build.LazyPath,
-    setup: ?*std.Build.Step,
-) Outcome {
+    package_emsdk: ?*std.Build.Dependency,
+) Result {
     const sokol_emsdk = dep_sokol.builder.dependency("emsdk", .{});
     const scripts = [_][]const u8{
         sokol_emsdk.path("emsdk").getPath(b),
         sokol_emsdk.path("emsdk.bat").getPath(b),
     };
+    // Find an existing setup for OUR package first: sokol-zig's removal below
+    // only matches sokol-zig's own emsdk scripts, never these.
+    const existing: ?*std.Build.Step = if (package_emsdk) |e| blk: {
+        const own = [_][]const u8{ e.path("emsdk").getPath(b), e.path("emsdk.bat").getPath(b) };
+        for (sokol_clib.step.dependencies.items) |dep| {
+            if (setupKind(b, dep, &own) == .activate) break :blk dep;
+        }
+        break :blk null;
+    } else null;
     const setup_removed = removeSetupSteps(b, &sokol_clib.step, &scripts);
     const include_removed = removeSystemIncludeDir(
         b,
@@ -104,8 +140,20 @@ pub fn takeOver(
         .{ setup_removed, include_removed },
     );
     sokol_clib.root_module.addSystemIncludePath(sysroot);
-    if (setup) |s| sokol_clib.step.dependOn(s);
-    return result;
+    const setup: ?*std.Build.Step = if (package_emsdk) |e| switch (setupPlan(existing != null, isActivated(b, e))) {
+        .reuse => existing,
+        .none => null,
+        .create => blk: {
+            const s = packageSetupStep(b, e);
+            sokol_clib.step.dependOn(s);
+            break :blk s;
+        },
+    } else null;
+    return .{ .outcome = result, .setup = setup };
+}
+
+fn isActivated(b: *std.Build, emsdk: *std.Build.Dependency) bool {
+    return if (std.Io.Dir.cwd().access(b.graph.io, emsdk.path(".emscripten").getPath(b), .{})) |_| true else |_| false;
 }
 
 fn removeSetupSteps(b: *std.Build, step: *std.Build.Step, scripts: []const []const u8) usize {
@@ -156,10 +204,12 @@ fn removeSystemIncludeDir(b: *std.Build, module: *std.Build.Module, abs_path: []
 // ── an emsdk package's own one-time setup ────────────────────────────────
 
 /// `emsdk install latest` + `emsdk activate latest` on `emsdk` (an emsdk Zig
-/// package), or null when it is already activated (`.emscripten` present).
-/// Named "(zig-pkg emsdk)" so `--summary all` shows whether it ran.
-pub fn packageSetupStep(b: *std.Build, emsdk: *std.Build.Dependency) ?*std.Build.Step {
-    if (std.Io.Dir.cwd().access(b.graph.io, emsdk.path(".emscripten").getPath(b), .{})) |_| return null else |_| {}
+/// package); returns the activate step. Named "(zig-pkg emsdk)" so
+/// `--summary all` shows whether it ran. Only `takeOver` calls it, so a shared
+/// `sokol_clib` never gets two of them. On Windows, Zig runs `emsdk.bat`
+/// through cmd.exe itself (std.Io.Threaded handles .bat/.cmd), as sokol-zig
+/// does.
+fn packageSetupStep(b: *std.Build, emsdk: *std.Build.Dependency) *std.Build.Step {
     const install = emsdkCommand(b, emsdk);
     install.addArgs(&.{ "install", "latest" });
     install.setName("emsdk install latest (zig-pkg emsdk)");
@@ -224,6 +274,16 @@ test "outcome: the second package on the shared sokol_clib finds nothing left" {
     // labelle-sokol + this bridge in one game: whichever runs second.
     try testing.expectEqual(Outcome.already_taken_over, try outcome(0, 0, false));
     try testing.expectEqual(Outcome.already_taken_over, try outcome(0, 0, true));
+}
+
+test "setupPlan: the second package reuses the first one's setup, never a second install" {
+    // labelle-sokol + the imgui bridge on a cold package build: the second
+    // caller must wait on the step already on sokol_clib, whether or not the
+    // marker exists yet (it doesn't: the step hasn't run at configure time).
+    try testing.expectEqual(SetupPlan.reuse, setupPlan(true, false));
+    try testing.expectEqual(SetupPlan.reuse, setupPlan(true, true));
+    try testing.expectEqual(SetupPlan.create, setupPlan(false, false));
+    try testing.expectEqual(SetupPlan.none, setupPlan(false, true));
 }
 
 test "outcome: a half-found shape means sokol-zig changed, never a silent pass" {

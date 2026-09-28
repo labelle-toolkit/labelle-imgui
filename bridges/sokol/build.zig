@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
     //     this bridge's emsdk package is not fetched; or
     //   - this bridge's `emsdk` package (#41), pinned identically to the
     //     game's root emsdk (the one its emcc link uses). Its own
-    //     install/activate (`sokol_emsdk_setup.packageSetupStep`) runs when it
+    //     install/activate (created by `sokol_emsdk_setup.takeOver`) runs when it
     //     isn't activated yet, and both C compiles wait for it.
     // Either way sokol-zig's OWN emsdk handling is taken off sokol_clib
     // (`sokol_emsdk_setup.takeOver`): its install/activate steps, which ran on
@@ -147,9 +147,9 @@ pub fn build(b: *std.Build) void {
         }, fs);
         if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
 
-        // The chosen emsdk's sysroot, and (package only) its pending setup.
+        // The chosen emsdk's sysroot, and (package only) the package itself.
         var sysroot: std.Build.LazyPath = undefined;
-        var setup: ?*std.Build.Step = null;
+        var package_emsdk: ?*std.Build.Dependency = null;
         switch (source) {
             .external => |root| sysroot = .{
                 .cwd_relative = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM"),
@@ -159,12 +159,15 @@ pub fn build(b: *std.Build) void {
                 // re-runs build().
                 const emsdk_dep = b.lazyDependency("emsdk", .{}) orelse return;
                 sysroot = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
-                setup = sokol_emsdk_setup.packageSetupStep(b, emsdk_dep);
+                package_emsdk = emsdk_dep;
             },
         }
-        _ = sokol_emsdk_setup.takeOver(b, dep_sokol, sokol_artifact, sysroot, setup);
+        // The package's setup is created (or, when labelle-sokol already
+        // attached one to the shared sokol_clib, reused) by takeOver, so a game
+        // never runs two installs on one emsdk directory.
+        const taken = sokol_emsdk_setup.takeOver(b, dep_sokol, sokol_artifact, sysroot, package_emsdk);
         cimgui_artifact.root_module.addSystemIncludePath(sysroot);
-        if (setup) |s| cimgui_artifact.step.dependOn(s);
+        if (taken.setup) |s| cimgui_artifact.step.dependOn(s);
     }
 
     // Build bridge as static library. Android forces PIC end-to-end —
