@@ -1,7 +1,7 @@
 const std = @import("std");
 // Which emsdk a wasm build uses (external EMSDK vs the emsdk package, #39).
 const emsdk_source = @import("emsdk_source.zig");
-// Finds sokol-zig's own emsdk install/activate steps on sokol_clib (#39).
+// Takes sokol-zig's own emsdk setup + sysroot off sokol_clib (#39, #41).
 const sokol_emsdk_setup = @import("sokol_emsdk_setup.zig");
 
 /// Bridge between Dear ImGui (cimgui) and sokol via sokol_imgui.
@@ -116,23 +116,23 @@ pub fn build(b: *std.Build) void {
     // the sokol and cimgui C compile artifacts. Gated on `.emscripten`
     // so desktop / mobile builds remain untouched.
     //
-    // sokol-zig's `emSdkSetupStep` (which actually populates the sysroot
-    // by running `emsdk install` + `emsdk activate`) is private and only
-    // hooked onto `sokol_clib`. We chain cimgui_clib onto sokol_clib so
-    // the setup completes before cimgui's C++ compile starts — otherwise
-    // the `-isystem ...sysroot/include` argument points at a path that
-    // doesn't yet exist and `<assert.h>` fails to resolve.
-    //
-    // A valid `EMSDK` wins (labelle-imgui#39, same as the bgfx bridge's #37;
-    // see emsdk_source.zig): when it has `upstream/emscripten` + `.emscripten`
-    // + the sysroot (labelle-web 0.3's provider exports EMSDK, EM_CONFIG and
-    // PATH in that shape), sokol_clib and cimgui_clib take the sysroot from
-    // it, this bridge's emsdk package is not fetched, and sokol-zig's
-    // install/activate steps are removed from sokol_clib (sokol-zig has no
-    // opt-out; see sokol_emsdk_setup.zig), so sokol-zig's emsdk package is
-    // fetched but never installed. Before #39 that was a second ~1.5 GB
-    // download per cold runner. `-Demsdk_expect=external|package` fails the
-    // configure unless that source was chosen, so CI can assert which path ran.
+    // ONE emsdk provides the headers for both, and it is the one the game
+    // links with (see emsdk_source.zig):
+    //   - a valid `EMSDK` (labelle-imgui#39; labelle-web 0.3 exports EMSDK,
+    //     EM_CONFIG and PATH in that shape), whose sysroot is used as is, and
+    //     this bridge's emsdk package is not fetched; or
+    //   - this bridge's `emsdk` package (#41), pinned identically to the
+    //     game's root emsdk (the one its emcc link uses). Its own
+    //     install/activate (`sokol_emsdk_setup.packageSetupStep`) runs when it
+    //     isn't activated yet, and both C compiles wait for it.
+    // Either way sokol-zig's OWN emsdk handling is taken off sokol_clib
+    // (`sokol_emsdk_setup.takeOver`): its install/activate steps, which ran on
+    // sokol-zig's different emsdk pin (5.0.x) as a second ~1.5 GB download,
+    // and its sysroot include, which put that other SDK's headers first.
+    // Before #41 the package path added the 4.0.9 sysroot BEHIND sokol-zig's,
+    // and nothing activated 4.0.9, so it could point at an empty directory.
+    // `-Demsdk_expect=external|package` fails the configure unless that source
+    // was chosen, so CI can assert which path ran.
     if (target.result.os.tag == .emscripten) {
         const emsdk_expect = b.option(
             emsdk_source.Expect,
@@ -147,50 +147,24 @@ pub fn build(b: *std.Build) void {
         }, fs);
         if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
 
-        // sokol-zig's own emsdk package (non-lazy in its build.zig.zon) and its
-        // entry scripts, to recognise the setup commands sokol-zig runs on it.
-        const sokol_emsdk = dep_sokol.builder.dependency("emsdk", .{});
-        const sokol_emsdk_scripts = [_][]const u8{
-            sokol_emsdk.path("emsdk").getPath(b),
-            sokol_emsdk.path("emsdk.bat").getPath(b),
-        };
+        // The chosen emsdk's sysroot, and (package only) its pending setup.
+        var sysroot: std.Build.LazyPath = undefined;
+        var setup: ?*std.Build.Step = null;
         switch (source) {
-            .external => |root| {
-                const inc: std.Build.LazyPath = .{
-                    .cwd_relative = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM"),
-                };
-                // sokol-zig already put ITS package's sysroot on sokol_clib. If
-                // that package was activated by an earlier build, the header
-                // search would find it before ours and mix two SDKs, so it is
-                // replaced, not merely followed, by the external sysroot.
-                const pkg_sysroot = sokol_emsdk.path("upstream/emscripten/cache/sysroot/include").getPath(b);
-                if (removeSystemIncludeDir(sokol_artifact.root_module, pkg_sysroot) == 0) std.debug.panic(
-                    "emsdk: a valid EMSDK is set, but sokol-zig's emsdk sysroot include was not found on sokol_clib, so it cannot be replaced (did the sokol pin change how it adds it?)",
-                    .{},
-                );
-                sokol_artifact.root_module.addSystemIncludePath(inc);
-                cimgui_artifact.root_module.addSystemIncludePath(inc);
-                const removed = removeSokolEmsdkSetup(&sokol_artifact.step, &sokol_emsdk_scripts);
-                // sokol-zig adds the setup only while its package is not yet
-                // activated. If it should be there but wasn't found, sokol-zig
-                // changed shape: fail loudly instead of downloading silently.
-                const pkg_activated = fs.exists(sokol_emsdk.path(".emscripten").getPath(b));
-                if (!pkg_activated and removed == 0) std.debug.panic(
-                    "emsdk: a valid EMSDK is set, but sokol-zig's emsdk install/activate steps were not found on sokol_clib, so they cannot be skipped (did the sokol pin change how it sets up emsdk? see bridges/sokol/sokol_emsdk_setup.zig)",
-                    .{},
-                );
+            .external => |root| sysroot = .{
+                .cwd_relative = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM"),
             },
             .package => {
-                // Name sokol-zig's setup steps so `--summary all` shows they ran.
-                nameSokolEmsdkSetup(&sokol_artifact.step, &sokol_emsdk_scripts);
-                if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
-                    const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
-                    sokol_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
-                    cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
-                    cimgui_artifact.step.dependOn(&sokol_artifact.step);
-                }
+                // Lazy: on the first configure the build runner fetches it and
+                // re-runs build().
+                const emsdk_dep = b.lazyDependency("emsdk", .{}) orelse return;
+                sysroot = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
+                setup = sokol_emsdk_setup.packageSetupStep(b, emsdk_dep);
             },
         }
+        _ = sokol_emsdk_setup.takeOver(b, dep_sokol, sokol_artifact, sysroot, setup);
+        cimgui_artifact.root_module.addSystemIncludePath(sysroot);
+        if (setup) |s| cimgui_artifact.step.dependOn(s);
     }
 
     // Build bridge as static library. Android forces PIC end-to-end —
@@ -221,7 +195,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(bridge_lib);
 
     // ── Unit tests ─────────────────────────────────────────────────────
-    // The wasm emsdk decisions (#39) are pure Zig, so they run on the host
+    // The wasm emsdk decisions (#39, #41) are pure Zig, so they run on the host
     // (pinned so `zig build test` still runs under `-Dtarget=` cross builds).
     const host_target = b.resolveTargetQuery(.{});
     const test_step = b.step("test", "Run sokol bridge unit tests");
@@ -250,67 +224,6 @@ const BuildFs = struct {
         return true;
     }
 };
-
-/// Which sokol-zig emsdk setup command `dep` is, or null for any other step.
-fn sokolEmsdkSetupKind(b: *std.Build, dep: *std.Build.Step, scripts: []const []const u8) ?sokol_emsdk_setup.Kind {
-    const run = dep.cast(std.Build.Step.Run) orelse return null;
-    const argv = b.allocator.alloc(?[]const u8, run.argv.items.len) catch @panic("OOM");
-    defer b.allocator.free(argv);
-    for (run.argv.items, argv) |arg, *out| out.* = switch (arg) {
-        .bytes => |bytes| bytes,
-        else => null,
-    };
-    return sokol_emsdk_setup.classify(argv, scripts);
-}
-
-/// Drop sokol-zig's `emsdk install/activate latest` from `sokol_clib`'s
-/// direct dependencies (install is only reachable through activate).
-/// Returns how many steps were removed.
-fn removeSokolEmsdkSetup(step: *std.Build.Step, scripts: []const []const u8) usize {
-    var removed: usize = 0;
-    var i: usize = 0;
-    while (i < step.dependencies.items.len) {
-        if (sokolEmsdkSetupKind(step.owner, step.dependencies.items[i], scripts) != null) {
-            _ = step.dependencies.orderedRemove(i);
-            removed += 1;
-        } else i += 1;
-    }
-    return removed;
-}
-
-/// Remove every `-isystem` entry of `module` that resolves to `abs_path`.
-/// Only source/dependency/absolute paths are resolved: a generated path can't be
-/// read at configure time, and sokol-zig's sysroot is a dependency path.
-/// Returns how many entries were removed.
-fn removeSystemIncludeDir(module: *std.Build.Module, abs_path: []const u8) usize {
-    const b = module.owner;
-    var removed: usize = 0;
-    var i: usize = 0;
-    while (i < module.include_dirs.items.len) {
-        const match = switch (module.include_dirs.items[i]) {
-            .path_system => |lp| switch (lp) {
-                .src_path, .dependency, .cwd_relative => std.mem.eql(u8, lp.getPath(b), abs_path),
-                .generated => false,
-            },
-            else => false,
-        };
-        if (match) {
-            _ = module.include_dirs.orderedRemove(i);
-            removed += 1;
-        } else i += 1;
-    }
-    return removed;
-}
-
-/// Name sokol-zig's setup steps (activate, and the install behind it) so the
-/// build summary shows `(zig-pkg emsdk)` when they run.
-fn nameSokolEmsdkSetup(step: *std.Build.Step, scripts: []const []const u8) void {
-    for (step.dependencies.items) |dep| {
-        const kind = sokolEmsdkSetupKind(step.owner, dep, scripts) orelse continue;
-        dep.name = kind.stepName();
-        if (kind == .activate) nameSokolEmsdkSetup(dep, scripts);
-    }
-}
 
 /// Locate the Android NDK sysroot by scanning ANDROID_HOME/ndk/ for the
 /// latest installed NDK version. Falls back to ANDROID_NDK_HOME if set.
