@@ -1,7 +1,7 @@
-//! Where a bridge's wasm build takes emscripten from (labelle-imgui#37 for
-//! the bgfx bridge, #39 for the sokol bridge; same as labelle-bgfx#159).
-//! bridges/bgfx and bridges/sokol hold identical copies (CI `cmp`s them);
-//! keep them in sync with labelle-bgfx's copy too.
+//! Where a wasm build takes emscripten from (labelle-bgfx#159; labelle-imgui
+//! #37 bgfx bridge, #39/#41 sokol bridge; labelle-sokol#33).
+//! Identical copies live in labelle-imgui's bridges/bgfx and bridges/sokol
+//! (its CI `cmp`s them), labelle-sokol and labelle-bgfx: keep them in sync.
 //!
 //! Two sources:
 //!
