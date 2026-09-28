@@ -66,9 +66,12 @@ pub fn Sync(comptime Gpu: type) type {
                 // After a surface loss ImGui still holds `Status == OK` and a
                 // TexID for a slot the bridge just cleared; force a re-create
                 // so ImGui's own pixels are re-uploaded to the new context.
+                // A pending destroy (or an already destroyed texture) is left
+                // alone: re-creating it would leak a texture ImGui is dropping.
                 if (invalidated) {
                     ig.ImTextureData_SetTexID(tex, 0);
-                    ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_WantCreate);
+                    if (tex.*.Status == ig.ImTextureStatus_OK or tex.*.Status == ig.ImTextureStatus_WantUpdates)
+                        ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_WantCreate);
                 }
                 switch (tex.*.Status) {
                     ig.ImTextureStatus_WantCreate => self.create(tex),

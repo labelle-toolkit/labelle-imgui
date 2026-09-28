@@ -156,6 +156,25 @@ test "device loss re-creates the atlas once, then stays put" {
     try std.testing.expectEqual(@as(usize, 1), h.gpu.destroys);
 }
 
+test "device loss does not re-create a texture ImGui is destroying" {
+    Harness.init();
+    defer Harness.deinit();
+    var h: Harness = .{};
+
+    h.hudFrame("HP 100");
+    for (0..@import("tex_table.zig").MAX_TEXTURES) |i| h.sync().releaseSlot(i);
+    ig.igNewFrame();
+    ig.igRender();
+    // A destroy ImGui queued for this frame (e.g. an atlas replaced by a
+    // repack) must be acknowledged, not turned into a fresh texture.
+    const tex = ig.igGetIO().*.Fonts.*.TexData;
+    ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_WantDestroy);
+    h.sync().process(ig.igGetDrawData() orelse unreachable, true);
+    try std.testing.expectEqual(@as(usize, 1), h.gpu.creates);
+    try std.testing.expectEqual(@as(usize, 0), Harness.fontTexId());
+    try std.testing.expect(Harness.fontStatus() != ig.ImTextureStatus_WantDestroy);
+}
+
 test "a failed create is retried next frame, not re-created every frame after" {
     Harness.init();
     defer Harness.deinit();
