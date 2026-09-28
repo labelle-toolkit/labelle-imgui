@@ -763,6 +763,7 @@ fn orthoMatrix(l: f32, r: f32, b: f32, t: f32) [16]f32 {
 /// drawing with — and destroying one on ImGui's say-so would yank a live
 /// texture out from under the game.
 const tex_table = @import("tex_table.zig");
+const texture_sync = @import("texture_sync.zig");
 const MAX_TEXTURES = tex_table.MAX_TEXTURES;
 var textures: tex_table.TextureTable = .empty;
 
@@ -771,12 +772,48 @@ comptime {
     std.debug.assert(tex_table.INVALID_HANDLE == INVALID);
 }
 
+/// The bgfx side of `texture_sync.Sync`: the only place the bridge creates,
+/// uploads to, or destroys an ImGui texture.
+const BgfxGpu = struct {
+    /// MUTABLE RGBA8 (no initial memory): bgfx rejects `updateTexture2D` on
+    /// a texture created with data, and `WantUpdates` must sub-upload into
+    /// the same handle rather than re-create the atlas (labelle-imgui#28).
+    pub fn create(_: *BgfxGpu, w: u16, h: u16) ?u16 {
+        const handle = bgfx.createTexture2D(
+            w,
+            h,
+            false,
+            1,
+            .RGBA8,
+            bgfx.SamplerFlags_UClamp | bgfx.SamplerFlags_VClamp,
+            null,
+            0,
+        );
+        return if (isValid(handle.idx)) handle.idx else null;
+    }
+
+    /// bgfx.copy takes its own copy into the command queue, so ImGui may
+    /// reuse its pixel buffer as soon as this returns.
+    pub fn upload(_: *BgfxGpu, handle: u16, r: texture_sync.Region) void {
+        const mem = bgfx.copy(r.pixels.ptr, @intCast(r.pixels.len));
+        bgfx.updateTexture2D(.{ .idx = handle }, 0, 0, r.x, r.y, r.w, r.h, mem, r.pitch);
+    }
+
+    pub fn destroy(_: *BgfxGpu, handle: u16) void {
+        bgfx.destroyTexture(.{ .idx = handle });
+    }
+};
+var bgfx_gpu: BgfxGpu = .{};
+
+fn textureSync() texture_sync.Sync(BgfxGpu) {
+    return .{ .gpu = &bgfx_gpu, .table = &textures };
+}
+
 /// Release a slot, destroying the underlying bgfx texture only if this
 /// bridge created it. Bumps the slot's generation (inside `release`) so any
 /// id minted for the old occupant is now stale.
 fn releaseSlot(slot: usize) void {
-    const prev = textures.release(slot) orelse return;
-    if (prev.owned) bgfx.destroyTexture(.{ .idx = prev.handle_idx });
+    textureSync().releaseSlot(slot);
 }
 
 /// Once-per-id log of draw commands that referenced a texture id no longer
@@ -833,108 +870,14 @@ fn logStaleOnce(id: u64, why: tex_table.Miss) void {
     }
 }
 
+/// Honour ImGui's texture requests (create / in-place update / destroy).
+/// The logic lives in `texture_sync.zig` so it is host-tested against real
+/// ImGui frames; this only feeds it the device-lost flag.
 fn processTextures(dd: *ig.ImDrawData) void {
-    const tex_vec = dd.*.Textures orelse return;
-    const count: usize = @intCast(tex_vec.*.Size);
-    const items: [*]*ig.ImTextureData = @ptrCast(tex_vec.*.Data);
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        const tex = items[i];
-        // After a surface loss every bgfx texture we uploaded is gone, but
-        // ImGui still holds `Status == OK` and a `TexID` pointing at a slot
-        // we just cleared — so it would never re-request the upload and the
-        // draw calls would sample a destroyed (or recycled) handle. Force
-        // each texture back to `WantCreate` on the first frame after the
-        // invalidation so ImGui's own pixel data is re-uploaded to the new
-        // context. See `imgui_bridge_invalidate_textures`.
-        if (textures_invalidated) {
-            ig.ImTextureData_SetTexID(tex, 0);
-            ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_WantCreate);
-        }
-        if (tex.*.Status != ig.ImTextureStatus_OK) {
-            updateTexture(tex);
-        }
-    }
+    // Keep a pending device-lost flag until there is a texture list to apply it to.
+    if (dd.*.Textures == null) return;
+    textureSync().process(dd, textures_invalidated);
     textures_invalidated = false;
-}
-
-fn updateTexture(tex: *ig.ImTextureData) void {
-    switch (tex.*.Status) {
-        ig.ImTextureStatus_WantCreate => createTexture(tex),
-        ig.ImTextureStatus_WantUpdates => updateTexturePixels(tex),
-        ig.ImTextureStatus_WantDestroy => destroyTexture(tex),
-        else => {},
-    }
-}
-
-fn createTexture(tex: *ig.ImTextureData) void {
-    // ImGui only ever requests RGBA32 here (we didn't advertise Alpha8).
-    const w: u16 = @intCast(tex.*.Width);
-    const h: u16 = @intCast(tex.*.Height);
-    const pixels = ig.ImTextureData_GetPixels(tex);
-    const size: u32 = @intCast(ig.ImTextureData_GetSizeInBytes(tex));
-
-    // bgfx.copy takes its own copy into the command queue, so the ImGui
-    // pixel buffer can be freed/reused after this returns.
-    const mem = bgfx.copy(pixels, size);
-    const handle = bgfx.createTexture2D(
-        w,
-        h,
-        false,
-        1,
-        .RGBA8,
-        bgfx.SamplerFlags_UClamp | bgfx.SamplerFlags_VClamp,
-        mem,
-        0,
-    );
-    if (!isValid(handle.idx)) {
-        std.log.err("imgui-bgfx: createTexture2D failed ({d}x{d})", .{ w, h });
-        return;
-    }
-
-    // Take the first free DENSE slot — independent of the bgfx handle idx,
-    // which may be any value from the global pool. `owned = true`: we
-    // created it, so we destroy it.
-    const tex_id = textures.insert(handle.idx, true) orelse {
-        // Out of dense slots — destroy and bail rather than corrupt the map.
-        bgfx.destroyTexture(handle);
-        std.log.err("imgui-bgfx: exceeded MAX_TEXTURES ({d})", .{MAX_TEXTURES});
-        return;
-    };
-    ig.ImTextureData_SetTexID(tex, @intCast(tex_id));
-    ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_OK);
-}
-
-fn updateTexturePixels(tex: *ig.ImTextureData) void {
-    // We didn't request partial updates with a dynamic texture, so the
-    // simplest correct path is to recreate the full texture from the current
-    // pixels. Font-atlas updates are rare (DPI/scale change, glyph reload),
-    // so the cost is negligible for the MVP. A dynamic-texture + sub-rect
-    // updateTexture2D path is a possible optimization follow-up.
-    //
-    // CREATE FIRST, retire the old texture only on success. `createTexture`
-    // resolves a *different* free slot and writes a fresh TexID on success,
-    // and leaves TexID/status UNTOUCHED on failure — so a transient
-    // createTexture2D failure can't blank the atlas (the old texture stays
-    // bound). Destroying the old handle up front would lose it on failure.
-    const old_texid = ig.ImTextureData_GetTexID(tex);
-    const old_slot = textures.slotOf(@intCast(old_texid));
-
-    createTexture(tex);
-
-    // A fresh TexID + OK status means the replacement is live; retire the old.
-    if (tex.*.Status == ig.ImTextureStatus_OK and
-        ig.ImTextureData_GetTexID(tex) != old_texid)
-    {
-        if (old_slot) |slot| releaseSlot(slot);
-    }
-    // else: create failed — old texture + slot + TexID left intact.
-}
-
-fn destroyTexture(tex: *ig.ImTextureData) void {
-    if (textures.slotOf(@intCast(ig.ImTextureData_GetTexID(tex)))) |slot| releaseSlot(slot);
-    ig.ImTextureData_SetTexID(tex, 0);
-    ig.ImTextureData_SetStatus(tex, ig.ImTextureStatus_Destroyed);
 }
 
 fn destroyAllTextures() void {
