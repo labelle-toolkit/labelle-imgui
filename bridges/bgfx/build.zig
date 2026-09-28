@@ -103,10 +103,21 @@ pub fn build(b: *std.Build) void {
         const BuildFs = struct {
             b: *std.Build,
             pub fn exists(self: @This(), path: []const u8) bool {
-                return if (std.Io.Dir.cwd().access(self.b.graph.io, path, .{})) |_| true else |_| false;
+                std.Io.Dir.cwd().access(self.b.graph.io, path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => return false,
+                    // Anything else (permissions, I/O) is not "missing": report
+                    // it rather than silently falling back to installing the
+                    // package emsdk.
+                    else => std.debug.panic("emsdk: cannot check EMSDK path '{s}': {s}", .{ path, @errorName(err) }),
+                };
+                return true;
             }
         };
-        const source = emsdk_source.resolve(b.allocator, b.graph.environ_map.get("EMSDK"), BuildFs{ .b = b });
+        // The bridge never runs emcc itself (the backend links), but a valid
+        // emsdk has one, so the same layout check as labelle-bgfx applies.
+        const source = emsdk_source.resolve(b.allocator, b.graph.environ_map.get("EMSDK"), .{
+            .emcc_name = if (@import("builtin").os.tag == .windows) "emcc.bat" else "emcc",
+        }, BuildFs{ .b = b });
         if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
         switch (source) {
             .external => |root| {

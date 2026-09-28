@@ -4,19 +4,23 @@
 //! Two sources:
 //!
 //! - `.external`: `EMSDK` is set and names a valid, activated emsdk: it has
-//!   `upstream/emscripten` (from `emsdk install`) and `.emscripten` (the
-//!   EM_CONFIG from `emsdk activate`). labelle-web 0.3's provider exports
-//!   `EMSDK`, `EM_CONFIG` and PATH in exactly this shape. The sysroot headers
-//!   (for cimgui's C++ compile) come from there, and the `emsdk` Zig package
-//!   is neither
-//!   fetched nor run: no `emsdk install/activate`, so no second ~1.5 GB
-//!   download.
+//!   `upstream/emscripten/<emcc>` (from `emsdk install`), `.emscripten` (the
+//!   EM_CONFIG from `emsdk activate`) and, unless `-Demsdk_sysroot` overrides
+//!   it, `upstream/emscripten/cache/sysroot/include` (the C/C++ compiles need
+//!   it before emcc ever runs, so emcc's own cache setup comes too late).
+//!   labelle-web 0.3's provider exports `EMSDK`, `EM_CONFIG` and PATH in
+//!   exactly this shape. The sysroot headers (for cimgui's C++ compile) come
+//!   from there, and the `emsdk` Zig package is neither fetched nor run: no
+//!   `emsdk install/activate`, so no second ~1.5 GB download.
 //! - `.package`: `EMSDK` is unset, empty or incomplete. The `emsdk` Zig
 //!   package is used and, if it isn't activated yet, `emsdk install/activate
 //!   latest` runs on it. This is the behavior before #37.
 //!
 //! std-only and pure (the filesystem is injected), so the decision runs as a
-//! host unit test in `zig build test`.
+//! host unit test in `zig build test`. The injected `exists` must answer false
+//! ONLY for a path that does not exist; any other I/O error (permissions, ...)
+//! must be reported by the caller, not read as "missing", or the build would
+//! silently fall back to installing the package emsdk.
 const std = @import("std");
 
 pub const Source = union(enum) {
@@ -29,17 +33,25 @@ pub const Source = union(enum) {
 /// to assert which path ran, not only that the build passed.
 pub const Expect = enum { external, package };
 
-/// The paths under `EMSDK` that make it valid, relative to its root.
-pub const markers = [_][]const []const u8{
-    &.{ "upstream", "emscripten" },
-    &.{".emscripten"},
+pub const Options = struct {
+    /// The host's emcc wrapper: `emcc`, or `emcc.bat` on Windows.
+    emcc_name: []const u8,
+    /// Require the default sysroot include dir. False when `-Demsdk_sysroot`
+    /// supplies the sysroot instead.
+    need_sysroot: bool = true,
 };
 
 /// Pick the source. `fs` is any value with `exists(path: []const u8) bool`.
-pub fn resolve(gpa: std.mem.Allocator, env_emsdk: ?[]const u8, fs: anytype) Source {
+pub fn resolve(gpa: std.mem.Allocator, env_emsdk: ?[]const u8, opts: Options, fs: anytype) Source {
     const root = env_emsdk orelse return .package;
     if (root.len == 0) return .package;
-    for (markers) |rel| {
+    const required = [_][]const []const u8{
+        &.{".emscripten"},
+        &.{ "upstream", "emscripten", opts.emcc_name },
+        &sysroot_rel,
+    };
+    const n: usize = if (opts.need_sysroot) required.len else required.len - 1;
+    for (required[0..n]) |rel| {
         const path = join(gpa, root, rel) catch return .package;
         defer gpa.free(path);
         if (!fs.exists(path)) return .package;
@@ -47,12 +59,14 @@ pub fn resolve(gpa: std.mem.Allocator, env_emsdk: ?[]const u8, fs: anytype) Sour
     return .{ .external = root };
 }
 
+const sysroot_rel = [_][]const u8{ "upstream", "emscripten", "cache", "sysroot", "include" };
+
 /// Null when `source` satisfies `expect` (or nothing is expected), else a
 /// message saying which path ran instead.
 pub fn mismatch(source: Source, expect: ?Expect) ?[]const u8 {
     const want = expect orelse return null;
     return switch (want) {
-        .external => if (source == .external) null else "-Demsdk_expect=external, but the emsdk Zig package was chosen: EMSDK is unset, empty, or lacks upstream/emscripten or .emscripten",
+        .external => if (source == .external) null else "-Demsdk_expect=external, but the emsdk Zig package was chosen: EMSDK is unset, empty, or lacks .emscripten, upstream/emscripten/emcc or the sysroot include dir",
         .package => if (source == .package) null else "-Demsdk_expect=package, but a valid EMSDK was found and used instead of the emsdk Zig package",
     };
 }
@@ -60,7 +74,7 @@ pub fn mismatch(source: Source, expect: ?Expect) ?[]const u8 {
 /// `<root>/upstream/emscripten/cache/sysroot/include`: the same sub-path the
 /// package fallback uses.
 pub fn sysrootInclude(gpa: std.mem.Allocator, root: []const u8) ![]u8 {
-    return join(gpa, root, &.{ "upstream", "emscripten", "cache", "sysroot", "include" });
+    return join(gpa, root, &sysroot_rel);
 }
 
 /// `<root>/upstream/emscripten/<tool>` (pass `emcc.bat` on Windows).
@@ -91,57 +105,92 @@ const FakeFs = struct {
     }
 };
 
-fn validLayout(root: []const u8) ![2][]u8 {
+const unix_opts: Options = .{ .emcc_name = "emcc" };
+
+/// The three required paths of a valid layout: .emscripten, emcc, sysroot.
+fn validLayout(root: []const u8) ![3][]u8 {
     return .{
-        try std.fs.path.join(testing.allocator, &.{ root, "upstream", "emscripten" }),
         try std.fs.path.join(testing.allocator, &.{ root, ".emscripten" }),
+        try std.fs.path.join(testing.allocator, &.{ root, "upstream", "emscripten", "emcc" }),
+        try std.fs.path.join(testing.allocator, &.{ root, "upstream", "emscripten", "cache", "sysroot", "include" }),
     };
+}
+
+fn freeLayout(layout: [3][]u8) void {
+    for (layout) |p| testing.allocator.free(p);
 }
 
 test "EMSDK unset: package, and the filesystem is not probed" {
     var probes: usize = 0;
-    const src = resolve(testing.allocator, null, FakeFs{ .present = &.{}, .probes = &probes });
+    const src = resolve(testing.allocator, null, unix_opts, FakeFs{ .present = &.{}, .probes = &probes });
     try testing.expect(src == .package);
     try testing.expectEqual(@as(usize, 0), probes);
 }
 
 test "EMSDK empty: package (treated as unset)" {
     var probes: usize = 0;
-    const src = resolve(testing.allocator, "", FakeFs{ .present = &.{}, .probes = &probes });
+    const src = resolve(testing.allocator, "", unix_opts, FakeFs{ .present = &.{}, .probes = &probes });
     try testing.expect(src == .package);
     try testing.expectEqual(@as(usize, 0), probes);
 }
 
-test "EMSDK valid (upstream/emscripten + .emscripten): external, root passed through" {
+test "EMSDK valid (.emscripten + emcc + sysroot): external, root passed through" {
     const root = "/home/u/.cache/labelle-web/emsdk/v1/x86_64-linux/4.0.9-tag";
     const layout = try validLayout(root);
-    defer for (layout) |p| testing.allocator.free(p);
+    defer freeLayout(layout);
     var probes: usize = 0;
-    const src = resolve(testing.allocator, root, FakeFs{ .present = &.{ layout[0], layout[1] }, .probes = &probes });
+    const src = resolve(testing.allocator, root, unix_opts, FakeFs{ .present = &.{ layout[0], layout[1], layout[2] }, .probes = &probes });
     switch (src) {
         .external => |r| try testing.expectEqualStrings(root, r),
         .package => return error.TestExpectedExternal,
     }
-    // Both markers were checked, not just one.
+    // Every required path was checked, not just one.
+    try testing.expectEqual(@as(usize, 3), probes);
+}
+
+test "EMSDK missing any one required path: package" {
+    const root = "/opt/emsdk";
+    const layout = try validLayout(root);
+    defer freeLayout(layout);
+    // Drop each required path in turn (not activated / not installed / no
+    // sysroot): each alone must send the build to the package.
+    for (0..3) |missing| {
+        var present: [2][]const u8 = undefined;
+        var n: usize = 0;
+        for (layout, 0..) |p, i| if (i != missing) {
+            present[n] = p;
+            n += 1;
+        };
+        var probes: usize = 0;
+        const src = resolve(testing.allocator, root, unix_opts, FakeFs{ .present = &present, .probes = &probes });
+        try testing.expect(src == .package);
+    }
+}
+
+test "EMSDK with only upstream/emscripten (no emcc for this host): package" {
+    const root = "/opt/emsdk";
+    const layout = try validLayout(root);
+    defer freeLayout(layout);
+    const bare = try std.fs.path.join(testing.allocator, &.{ root, "upstream", "emscripten" });
+    defer testing.allocator.free(bare);
+    var probes: usize = 0;
+    const win: Options = .{ .emcc_name = "emcc.bat" };
+    // A Linux/macOS layout (emcc, no emcc.bat) is not valid for a Windows host.
+    const src = resolve(testing.allocator, root, win, FakeFs{ .present = &.{ layout[0], layout[1], layout[2], bare }, .probes = &probes });
+    try testing.expect(src == .package);
+}
+
+test "-Demsdk_sysroot override: the default sysroot dir is not required" {
+    const root = "/opt/emsdk";
+    const layout = try validLayout(root);
+    defer freeLayout(layout);
+    var probes: usize = 0;
+    const no_sysroot: Options = .{ .emcc_name = "emcc", .need_sysroot = false };
+    const src = resolve(testing.allocator, root, no_sysroot, FakeFs{ .present = &.{ layout[0], layout[1] }, .probes = &probes });
+    try testing.expect(src == .external);
     try testing.expectEqual(@as(usize, 2), probes);
-}
-
-test "EMSDK installed but not activated (no .emscripten): package" {
-    const root = "/opt/emsdk";
-    const layout = try validLayout(root);
-    defer for (layout) |p| testing.allocator.free(p);
-    var probes: usize = 0;
-    const src = resolve(testing.allocator, root, FakeFs{ .present = &.{layout[0]}, .probes = &probes });
-    try testing.expect(src == .package);
-}
-
-test "EMSDK activated but no upstream/emscripten: package" {
-    const root = "/opt/emsdk";
-    const layout = try validLayout(root);
-    defer for (layout) |p| testing.allocator.free(p);
-    var probes: usize = 0;
-    const src = resolve(testing.allocator, root, FakeFs{ .present = &.{layout[1]}, .probes = &probes });
-    try testing.expect(src == .package);
+    // ...while without the override the same layout falls back.
+    try testing.expect(resolve(testing.allocator, root, unix_opts, FakeFs{ .present = &.{ layout[0], layout[1] }, .probes = &probes }) == .package);
 }
 
 test "mismatch: -Demsdk_expect gates the chosen source both ways" {
