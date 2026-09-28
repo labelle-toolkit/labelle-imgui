@@ -61,6 +61,113 @@ jobs:
         working-directory: bridges/bgfx
         run: zig build test --summary all
 
+  # The bgfx bridge on wasm honours a valid EMSDK and never activates the
+  # emsdk Zig package (labelle-imgui#37, same as labelle-bgfx#159).
+  # labelle-web 0.3's provider installs its own emsdk and exports EMSDK,
+  # EM_CONFIG and PATH; before #37 this build still ran `emsdk
+  # install/activate latest` on the package copy, a second ~1.5 GB download
+  # per cold runner. Asserts the MECHANISM, not only a green build:
+  #   1. `-Demsdk_expect` fails the configure unless the named source was
+  #      chosen: with EMSDK unset it must pick the package (and refuse
+  #      `external`); with a valid EMSDK it must refuse `package`;
+  #   2. the build summary shows no `emsdk install/activate (zig-pkg emsdk)`;
+  #   3. no emsdk package under zig-pkg/ was installed or activated (no
+  #      `upstream/`, no `.emscripten`). zig-pkg is not cached here.
+  bgfx-bridge-wasm-external-emsdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXT_EMSDK_VERSION: 4.0.9
+    defaults:
+      run:
+        working-directory: bridges/bgfx
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: '0.16.0'
+      # EMSDK unset: configure-only (`--help` runs build() but no steps), so
+      # this pins the fallback choice without the package's 1.5 GB install.
+      - name: EMSDK unset picks the emsdk package
+        env:
+          EMSDK: ''
+        run: |
+          set -uo pipefail
+          zig build -Dtarget=wasm32-emscripten -Demsdk_expect=package --help > /dev/null \
+            || { echo "FAIL: EMSDK unset did not pick the emsdk package"; exit 1; }
+          if zig build -Dtarget=wasm32-emscripten -Demsdk_expect=external --help > gate.log 2>&1; then
+            echo "FAIL: -Demsdk_expect=external passed with EMSDK unset"
+            exit 1
+          fi
+          grep -F "the emsdk Zig package was chosen" gate.log \
+            || { cat gate.log; echo "FAIL: expect=external failed for another reason"; exit 1; }
+      - name: Cache the external emsdk
+        id: ext-emsdk-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/ext-emsdk
+          key: ext-emsdk-${{ runner.os }}-${{ env.EXT_EMSDK_VERSION }}
+      # A plain emsdk checkout, installed + activated: the layout labelle-web's
+      # provider hands the build (`upstream/emscripten` + `.emscripten`).
+      - name: Install the external emsdk
+        if: steps.ext-emsdk-cache.outputs.cache-hit != 'true'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$EXT_EMSDK_VERSION" https://github.com/emscripten-core/emsdk ~/ext-emsdk
+          cd ~/ext-emsdk
+          ./emsdk install "$EXT_EMSDK_VERSION"
+          ./emsdk activate "$EXT_EMSDK_VERSION"
+      # labelle-web 0.3's env contract: EMSDK, EM_CONFIG, PATH += upstream/emscripten.
+      - name: Export EMSDK, EM_CONFIG and PATH
+        run: |
+          set -euo pipefail
+          root="$HOME/ext-emsdk"
+          test -d "$root/upstream/emscripten"
+          test -f "$root/.emscripten"
+          echo "EMSDK=$root" >> "$GITHUB_ENV"
+          echo "EM_CONFIG=$root/.emscripten" >> "$GITHUB_ENV"
+          echo "$root/upstream/emscripten" >> "$GITHUB_PATH"
+      - name: A valid EMSDK refuses expect=package
+        run: |
+          set -uo pipefail
+          if zig build -Dtarget=wasm32-emscripten -Demsdk_expect=package --help > gate.log 2>&1; then
+            echo "FAIL: -Demsdk_expect=package passed with a valid EMSDK set"
+            exit 1
+          fi
+          grep -F "a valid EMSDK was found and used" gate.log \
+            || { cat gate.log; echo "FAIL: expect=package failed for another reason"; exit 1; }
+      - name: Build the bridge for wasm from the external EMSDK
+        run: |
+          set -uo pipefail
+          zig build -Dtarget=wasm32-emscripten -Demsdk_expect=external --summary all > build.log 2>&1
+          status=$?
+          cat build.log
+          [ "$status" -eq 0 ] || { echo "FAIL: build exited $status"; exit 1; }
+          [ -s zig-out/lib/libbgfx_imgui_bridge.a ] || { echo "FAIL: no bridge archive"; exit 1; }
+      - name: Assert no zig-pkg emsdk install/activate ran
+        run: |
+          set -euo pipefail
+          if grep -F "(zig-pkg emsdk)" build.log; then
+            echo "FAIL: the build ran emsdk install/activate on the zig-pkg emsdk"
+            exit 1
+          fi
+          fail=0
+          shopt -s nullglob
+          for dir in zig-pkg/*/; do
+            [ -f "$dir/emsdk.py" ] || continue
+            echo "emsdk package present (fetched, not necessarily used): $dir"
+            for marker in upstream .emscripten; do
+              if [ -e "$dir$marker" ]; then
+                echo "FAIL: $dir$marker exists: the package emsdk was installed/activated"
+                fail=1
+              fi
+            done
+          done
+          exit $fail
+
   # Pins that must agree across packages/repos (every shared dependency:
   # cimgui, sokol, emsdk, ...), or a game links two copies of a
   # dependency (see tools/check_pins.py). Each package builds fine on its own

@@ -44,6 +44,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        // Imported by build.zig: which emsdk a wasm build uses (#37).
+        "emsdk_source.zig",
         "src",
     },
 }

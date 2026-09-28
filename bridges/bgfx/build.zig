@@ -1,4 +1,6 @@
 const std = @import("std");
+// Which emsdk a wasm build uses (external EMSDK vs the emsdk package, #37).
+const emsdk_source = @import("emsdk_source.zig");
 
 /// Bridge between Dear ImGui (cimgui) and bgfx.
 ///
@@ -84,13 +86,51 @@ pub fn build(b: *std.Build) void {
     // time `<assert.h>` is resolved. The setup is gated on the `.emscripten`
     // marker file, so when the emsdk cache is already activated (e.g. a prior
     // sokol-backend build in the same shared package cache) it's a no-op.
+    //
+    // A valid `EMSDK` wins (labelle-imgui#37, see emsdk_source.zig): when it
+    // has `upstream/emscripten` + `.emscripten` (labelle-web 0.3's provider
+    // exports EMSDK, EM_CONFIG and PATH in that shape), the sysroot comes from
+    // it and the emsdk package is neither fetched nor installed/activated.
+    // Before #37 the package was activated anyway, a second ~1.5 GB download
+    // per cold runner. `-Demsdk_expect=external|package` fails the configure
+    // unless that source was chosen, so CI can assert which path ran.
     if (target.result.os.tag == .emscripten) {
-        if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
-            const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
-            cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
-            if (emSdkSetupStep(b, emsdk_dep) catch @panic("emsdk setup failed")) |setup_step| {
-                cimgui_artifact.step.dependOn(&setup_step.step);
+        const emsdk_expect = b.option(
+            emsdk_source.Expect,
+            "emsdk_expect",
+            "Fail unless the wasm build takes emscripten from this source (external = a valid EMSDK, package = the emsdk Zig package)",
+        );
+        const BuildFs = struct {
+            b: *std.Build,
+            pub fn exists(self: @This(), path: []const u8) bool {
+                std.Io.Dir.cwd().access(self.b.graph.io, path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => return false,
+                    // Anything else (permissions, I/O) is not "missing": report
+                    // it rather than silently falling back to installing the
+                    // package emsdk.
+                    else => std.debug.panic("emsdk: cannot check EMSDK path '{s}': {s}", .{ path, @errorName(err) }),
+                };
+                return true;
             }
+        };
+        // The bridge never runs emcc itself (the backend links), but a valid
+        // emsdk has one, so the same layout check as labelle-bgfx applies.
+        const source = emsdk_source.resolve(b.allocator, b.graph.environ_map.get("EMSDK"), .{
+            .emcc_name = if (@import("builtin").os.tag == .windows) "emcc.bat" else "emcc",
+        }, BuildFs{ .b = b });
+        if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
+        switch (source) {
+            .external => |root| {
+                const inc = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM");
+                cimgui_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = inc });
+            },
+            .package => if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
+                const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
+                cimgui_artifact.root_module.addSystemIncludePath(emsdk_sysroot_inc);
+                if (emSdkSetupStep(b, emsdk_dep) catch @panic("emsdk setup failed")) |setup_step| {
+                    cimgui_artifact.step.dependOn(&setup_step.step);
+                }
+            },
         }
     }
 
@@ -135,9 +175,18 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // The wasm emsdk-source decision (#37): external EMSDK vs the package.
+    const emsdk_source_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("emsdk_source.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
     const test_step = b.step("test", "Run bgfx bridge unit tests");
     test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
     test_step.dependOn(&b.addRunArtifact(blend_tests).step);
+    test_step.dependOn(&b.addRunArtifact(emsdk_source_tests).step);
 }
 
 /// Locate the Android NDK sysroot — ported verbatim from the sokol bridge
@@ -208,8 +257,12 @@ fn emSdkSetupStep(b: *std.Build, emsdk: *std.Build.Dependency) !?*std.Build.Step
     if (!dot_emsc_exists) {
         const emsdk_install = createEmsdkStep(b, emsdk);
         emsdk_install.addArgs(&.{ "install", "latest" });
+        // Named so `--summary all` shows it: CI greps for these names to
+        // assert a build with a valid EMSDK never ran them (#37).
+        emsdk_install.setName("emsdk install latest (zig-pkg emsdk)");
         const emsdk_activate = createEmsdkStep(b, emsdk);
         emsdk_activate.addArgs(&.{ "activate", "latest" });
+        emsdk_activate.setName("emsdk activate latest (zig-pkg emsdk)");
         emsdk_activate.step.dependOn(&emsdk_install.step);
         return emsdk_activate;
     } else {
