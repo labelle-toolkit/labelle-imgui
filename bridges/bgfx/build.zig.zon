@@ -25,8 +25,8 @@
             // this bridge against other bgfx headers than the game links:
             // API 161 shifted `TextureFormat` (RGBA8 71 -> 74), so the font
             // atlas aborted in createTexture2D, and v11 shaders failed to load.
-            .url = "https://github.com/labelle-toolkit/zbgfx/archive/00be71e39e162dd52f227a4440cd05a94afc41f7.tar.gz",
-            .hash = "zbgfx-0.12.0-Sm4IxP7kDAeTLPSbajOwMSXtT9drIcs-IOspJJA-RnJp",
+            .url = "https://github.com/labelle-toolkit/zbgfx/archive/8cbb971f03b664b8036017b89e11ba5da199ebd0.tar.gz",
+            .hash = "zbgfx-0.12.0-Sm4IxDDlDAddKEW1hriGgVDQxypk4SyABQUFSWgGzTVj",
         },
         // emsdk is needed at WASM build time so we can plumb the sysroot
         // include path through to the cimgui C++ compile (imgui.h pulls in
