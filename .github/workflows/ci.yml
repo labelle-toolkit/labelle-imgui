@@ -183,6 +183,84 @@ jobs:
             fail=1
           fi
           exit $fail
+      # #41: sokol_clib and cimgui must compile against EMSDK's sysroot ONLY,
+      # not also sokol-zig's package sysroot. A fresh cache dir so the C/C++
+      # compiles really run and --verbose-cc prints them.
+      - name: sokol_clib + cimgui use only the external sysroot (#41)
+        if: matrix.bridge == 'sokol'
+        run: |
+          set -uo pipefail
+          zig build -Dtarget=wasm32-emscripten -Demsdk_expect=external \
+            --cache-dir "$RUNNER_TEMP/cc-cache" --verbose-cc > cc.log 2>&1 \
+            || { tail -50 cc.log; echo "FAIL: verbose build failed"; exit 1; }
+          python3 ../../tools/check_cc_sysroot.py cc.log "$EMSDK/upstream/emscripten/cache/sysroot/include" sokol_gfx.c imgui.cpp
+
+  # #41: with NO external EMSDK, the sokol bridge must use ONE emsdk, its own
+  # `emsdk` package (the same pin as the game's root emsdk, which the game
+  # links with), and never sokol-zig's different emsdk pin. Before #41 it
+  # added the 4.0.9 sysroot behind sokol-zig's 5.0.x one, and only sokol-zig's
+  # package was ever activated. Asserts:
+  #   1. the bridge's emsdk package is installed + activated (its own setup
+  #      steps ran, or a restored cache already had it);
+  #   2. sokol-zig's emsdk package has no `upstream/` and no `.emscripten`;
+  #   3. sokol_gfx.c and imgui.cpp compile with ONLY the bridge emsdk's
+  #      sysroot as -isystem.
+  sokol-bridge-wasm-package-emsdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: bridges/sokol
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: '0.16.0'
+      # The bridge's emsdk (installed + activated) is the expensive part.
+      - name: Cache the bridge's emsdk package
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: bridges/sokol/zig-pkg
+          key: sokol-bridge-zigpkg-${{ runner.os }}-${{ hashFiles('bridges/sokol/build.zig.zon') }}
+      - name: Build the bridge for wasm from its emsdk package
+        env:
+          EMSDK: ''
+        run: |
+          set -uo pipefail
+          zig build -Dtarget=wasm32-emscripten -Demsdk_expect=package \
+            --cache-dir "$RUNNER_TEMP/cc-cache" --verbose-cc --summary all > build.log 2>&1
+          status=$?
+          grep -v -- " -isystem " build.log | tail -40
+          [ "$status" -eq 0 ] || { tail -80 build.log; echo "FAIL: build exited $status"; exit 1; }
+          [ -s zig-out/lib/libsokol_imgui_bridge.a ] || { echo "FAIL: no bridge archive"; exit 1; }
+      - name: Only the bridge's emsdk was installed, and it provides the sysroot
+        run: |
+          set -euo pipefail
+          own_hash=$(python3 -c "import re;t=open('build.zig.zon').read();print(re.search(r'\.emsdk\s*=\s*\.\{.*?\.hash\s*=\s*\"([^\"]+)\"',t,re.S).group(1))")
+          own="zig-pkg/$own_hash"
+          echo "bridge emsdk package: $own"
+          [ -d "$own/upstream/emscripten" ] || { echo "FAIL: the bridge's emsdk was not installed"; exit 1; }
+          [ -f "$own/.emscripten" ] || { echo "FAIL: the bridge's emsdk was not activated"; exit 1; }
+          fail=0
+          seen=0
+          shopt -s nullglob
+          for dir in zig-pkg/*/; do
+            [ -f "$dir/emsdk.py" ] || continue
+            [ "${dir%/}" = "$own" ] && continue
+            seen=$((seen + 1))
+            echo "other emsdk package (sokol-zig's): $dir"
+            for marker in upstream .emscripten; do
+              if [ -e "$dir$marker" ]; then
+                echo "FAIL: $dir$marker exists: sokol-zig's emsdk was installed/activated"
+                fail=1
+              fi
+            done
+          done
+          [ "$seen" -gt 0 ] || { echo "FAIL: sokol-zig's emsdk package not found, so check 2 proved nothing"; fail=1; }
+          python3 ../../tools/check_cc_sysroot.py build.log "$own/upstream/emscripten/cache/sysroot/include" sokol_gfx.c imgui.cpp || fail=1
+          exit $fail
 
   # Pins that must agree across packages/repos (every shared dependency:
   # cimgui, sokol, emsdk, ...), or a game links two copies of a

@@ -33,7 +33,10 @@
         // `labelle-assembler/backends/sokol/build.zig.zon` — both deps
         // must resolve to the same emsdk version. Lazy so non-WASM
         // platforms don't fetch it. See labelle-cli#197. Not fetched either
-        // when a valid EMSDK supplies the sysroot (#39).
+        // when a valid EMSDK supplies the sysroot (#39). Without one, this
+        // package provides the sysroot for sokol_clib AND cimgui, and the
+        // bridge installs/activates it itself (#41); sokol-zig's own emsdk
+        // pin is never installed.
         .emsdk = .{
             .url = "git+https://github.com/emscripten-core/emsdk#4.0.9",
             .hash = "N-V-__8AAJl1DwBezhYo_VE6f53mPVm00R-Fk28NPW7P14EQ",
