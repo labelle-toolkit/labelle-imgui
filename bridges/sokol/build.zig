@@ -124,10 +124,11 @@ pub fn build(b: *std.Build) void {
     // doesn't yet exist and `<assert.h>` fails to resolve.
     //
     // A valid `EMSDK` wins (labelle-imgui#39, same as the bgfx bridge's #37;
-    // see emsdk_source.zig): when it has `upstream/emscripten` + `.emscripten`
-    // + the sysroot (labelle-web 0.3's provider exports EMSDK, EM_CONFIG and
+    // see emsdk_source.zig): when it has `upstream/emscripten/emcc` +
+    // `.emscripten` (labelle-web 0.3's provider exports EMSDK, EM_CONFIG and
     // PATH in that shape), sokol_clib and cimgui_clib take the sysroot from
-    // it, this bridge's emsdk package is not fetched, and sokol-zig's
+    // it (under `EM_CACHE` when set; a cold one is filled at configure time,
+    // labelle-assembler#823), this bridge's emsdk package is not fetched, and sokol-zig's
     // install/activate steps are removed from sokol_clib (sokol-zig has no
     // opt-out; see sokol_emsdk_setup.zig), so sokol-zig's emsdk package is
     // fetched but never installed. Before #39 that was a second ~1.5 GB
@@ -143,7 +144,8 @@ pub fn build(b: *std.Build) void {
         // The bridge never runs emcc itself (the backend links), but a valid
         // emsdk has one, so the same layout check as labelle-bgfx applies.
         const source = emsdk_source.resolve(b.allocator, b.graph.environ_map.get("EMSDK"), .{
-            .emcc_name = if (@import("builtin").os.tag == .windows) "emcc.bat" else "emcc",
+            .emcc_name = emsdk_source.emccName(@import("builtin").os.tag),
+            .em_cache = b.graph.environ_map.get("EM_CACHE"),
         }, fs);
         if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
 
@@ -155,10 +157,9 @@ pub fn build(b: *std.Build) void {
             sokol_emsdk.path("emsdk.bat").getPath(b),
         };
         switch (source) {
-            .external => |root| {
-                const inc: std.Build.LazyPath = .{
-                    .cwd_relative = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM"),
-                };
+            .external => |ext| {
+                emsdk_source.ensureSysroot(b, ext);
+                const inc: std.Build.LazyPath = .{ .cwd_relative = ext.sysroot };
                 // sokol-zig already put ITS package's sysroot on sokol_clib. If
                 // that package was activated by an earlier build, the header
                 // search would find it before ours and mix two SDKs, so it is

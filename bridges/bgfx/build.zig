@@ -88,9 +88,11 @@ pub fn build(b: *std.Build) void {
     // sokol-backend build in the same shared package cache) it's a no-op.
     //
     // A valid `EMSDK` wins (labelle-imgui#37, see emsdk_source.zig): when it
-    // has `upstream/emscripten` + `.emscripten` (labelle-web 0.3's provider
+    // has `upstream/emscripten/emcc` + `.emscripten` (labelle-web 0.3's provider
     // exports EMSDK, EM_CONFIG and PATH in that shape), the sysroot comes from
-    // it and the emsdk package is neither fetched nor installed/activated.
+    // it (under `EM_CACHE` when set; a cold one is filled at configure time,
+    // labelle-assembler#823) and the emsdk package is neither fetched nor
+    // installed/activated.
     // Before #37 the package was activated anyway, a second ~1.5 GB download
     // per cold runner. `-Demsdk_expect=external|package` fails the configure
     // unless that source was chosen, so CI can assert which path ran.
@@ -116,13 +118,14 @@ pub fn build(b: *std.Build) void {
         // The bridge never runs emcc itself (the backend links), but a valid
         // emsdk has one, so the same layout check as labelle-bgfx applies.
         const source = emsdk_source.resolve(b.allocator, b.graph.environ_map.get("EMSDK"), .{
-            .emcc_name = if (@import("builtin").os.tag == .windows) "emcc.bat" else "emcc",
+            .emcc_name = emsdk_source.emccName(@import("builtin").os.tag),
+            .em_cache = b.graph.environ_map.get("EM_CACHE"),
         }, BuildFs{ .b = b });
         if (emsdk_source.mismatch(source, emsdk_expect)) |msg| std.debug.panic("emsdk: {s}", .{msg});
         switch (source) {
-            .external => |root| {
-                const inc = emsdk_source.sysrootInclude(b.allocator, root) catch @panic("OOM");
-                cimgui_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = inc });
+            .external => |ext| {
+                emsdk_source.ensureSysroot(b, ext);
+                cimgui_artifact.root_module.addSystemIncludePath(.{ .cwd_relative = ext.sysroot });
             },
             .package => if (b.lazyDependency("emsdk", .{})) |emsdk_dep| {
                 const emsdk_sysroot_inc = emsdk_dep.path("upstream/emscripten/cache/sysroot/include");
