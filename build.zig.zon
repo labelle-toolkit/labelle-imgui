@@ -24,6 +24,12 @@
             // false → backward compatible with upstream.
             .url = "https://github.com/labelle-toolkit/sokol-zig/archive/2114f00976bf0b00bc1e1ced7a6d01d59f679e8c.tar.gz",
             .hash = "sokol-0.1.0-pb1HKx2mNwBtmW1xhHMfc0uxkmcvjrVG_IUmSqTrwjjn",
+            // Lazy: nothing in this root package's build.zig uses it (the
+            // sokol bridge declares its own), so an eager entry only made
+            // every consumer fetch sokol-zig plus ITS eager deps (an emsdk
+            // 5.0.6 checkout and sokol-tools-bin, ~57 MB) even for a bgfx
+            // build (labelle-assembler#823).
+            .lazy = true,
         },
     },
     .paths = .{
