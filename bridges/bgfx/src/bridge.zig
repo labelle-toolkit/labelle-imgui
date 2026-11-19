@@ -450,6 +450,14 @@ export fn imgui_bridge_key(key: i32, down: bool) void {
     ig.ImGuiIO_AddKeyEvent(io, glfwToImguiKey(key), down);
 }
 
+/// True while a text field has focus (`io.WantTextInput`), so a host with an
+/// on-screen keyboard (the bgfx Android shell) knows when to show it and
+/// when to hide it again.
+export fn imgui_bridge_wants_text_input() bool {
+    if (ig.igGetCurrentContext() == null) return false;
+    return ig.igGetIO().*.WantTextInput;
+}
+
 /// Raw GLFW keycode → `ImGuiKey`. Covers the text-editing + common keys; a
 /// GLFW keycode with no imgui equivalent maps to `ImGuiKey_None`.
 fn glfwToImguiKey(key_i32: i32) ig.ImGuiKey {
