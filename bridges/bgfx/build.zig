@@ -179,6 +179,22 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    // Modifier keys → imgui's ImGuiMod_* state (Ctrl+A / C / V, Shift+arrows).
+    const key_mods_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/key_mods.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
+    // Mouse buttons forwarded on change only (macOS Ctrl+click lag).
+    const mouse_buttons_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/mouse_buttons.zig"),
+            .target = host_target,
+            .optimize = optimize,
+        }),
+    });
     // The wasm emsdk-source decision (#37): external EMSDK vs the package.
     const emsdk_source_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -206,6 +222,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(texture_sync_tests).step);
     test_step.dependOn(&b.addRunArtifact(tex_table_tests).step);
     test_step.dependOn(&b.addRunArtifact(blend_tests).step);
+    test_step.dependOn(&b.addRunArtifact(key_mods_tests).step);
+    test_step.dependOn(&b.addRunArtifact(mouse_buttons_tests).step);
     test_step.dependOn(&b.addRunArtifact(emsdk_source_tests).step);
 }
 

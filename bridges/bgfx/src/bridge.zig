@@ -306,6 +306,9 @@ export fn imgui_bridge_shutdown() void {
     // Reset the frame-time baseline so a later re-init doesn't compute one
     // giant dt from the pre-shutdown timestamp (Cursor Bugbot, low sev).
     last_frame_ns = 0;
+    // A new context starts with every button up and no modifier held.
+    sent_buttons = .{};
+    held_modifiers = .{};
     ig.igDestroyContext(null);
 }
 
@@ -409,11 +412,18 @@ export fn imgui_bridge_mouse_pos(x: f32, y: f32) void {
     ig.ImGuiIO_AddMousePosEvent(io, x, y);
 }
 
+/// Forwarded only when the button changes (`mouse_buttons.zig`: the desktop
+/// host repeats every button each frame, which fought imgui's macOS
+/// Ctrl+click-as-right-click and made the pointer lag).
 export fn imgui_bridge_mouse_button(button: i32, down: bool) void {
     if (ig.igGetCurrentContext() == null) return;
+    if (!sent_buttons.changed(button, down)) return;
     const io = ig.igGetIO();
     ig.ImGuiIO_AddMouseButtonEvent(io, button, down);
 }
+
+const mouse_buttons = @import("mouse_buttons.zig");
+var sent_buttons: mouse_buttons.Buttons = .{};
 
 export fn imgui_bridge_mouse_wheel(wheel_x: f32, wheel_y: f32) void {
     if (ig.igGetCurrentContext() == null) return;
@@ -442,12 +452,23 @@ export fn imgui_bridge_char(codepoint: u32) void {
 
 /// A key down/up from the GLFW key callback (`key` is a raw GLFW keycode).
 /// Forwarded so imgui sees Backspace/Enter/Delete/arrows/Home/End and the
-/// Ctrl/Shift/Super modifiers (select-all, copy/paste, shift-select). An
-/// unmapped key resolves to `ImGuiKey_None`, which imgui silently drops.
+/// Ctrl/Shift/Alt/Super modifiers (select-all, copy/paste, shift-select):
+/// a modifier key also sets its `ImGuiMod_*`, which is all imgui reads them
+/// from (`key_mods.zig`). An unmapped key resolves to `ImGuiKey_None`, which
+/// imgui silently drops.
 export fn imgui_bridge_key(key: i32, down: bool) void {
     if (ig.igGetCurrentContext() == null) return;
     const io = ig.igGetIO();
     ig.ImGuiIO_AddKeyEvent(io, glfwToImguiKey(key), down);
+    if (held_modifiers.update(key, down)) |change| {
+        const mod: ig.ImGuiKey = switch (change.mod) {
+            .shift => ig.ImGuiMod_Shift,
+            .ctrl => ig.ImGuiMod_Ctrl,
+            .alt => ig.ImGuiMod_Alt,
+            .super => ig.ImGuiMod_Super,
+        };
+        ig.ImGuiIO_AddKeyEvent(io, mod, change.down);
+    }
 }
 
 /// True while a text field has focus (`io.WantTextInput`), so a host with an
@@ -457,6 +478,9 @@ export fn imgui_bridge_wants_text_input() bool {
     if (ig.igGetCurrentContext() == null) return false;
     return ig.igGetIO().*.WantTextInput;
 }
+
+const key_mods = @import("key_mods.zig");
+var held_modifiers: key_mods.Held = .{};
 
 /// Raw GLFW keycode → `ImGuiKey`. Covers the text-editing + common keys; a
 /// GLFW keycode with no imgui equivalent maps to `ImGuiKey_None`.
@@ -469,6 +493,9 @@ fn glfwToImguiKey(key_i32: i32) ig.ImGuiKey {
     if (key >= 65 and key <= 90) return @intCast(ig.ImGuiKey_A + (key - 65));
     if (key >= 48 and key <= 57) return @intCast(ig.ImGuiKey_0 + (key - 48));
     if (key >= 290 and key <= 301) return @intCast(ig.ImGuiKey_F1 + (key - 290)); // F1..F12
+    // KP_0..KP_9, then KP_DECIMAL, DIVIDE, MULTIPLY, SUBTRACT, ADD, ENTER,
+    // EQUAL (GLFW 320..336): imgui's Keypad* run in the same order.
+    if (key >= 320 and key <= 336) return @intCast(ig.ImGuiKey_Keypad0 + (key - 320));
     return switch (key) {
         32 => ig.ImGuiKey_Space,
         39 => ig.ImGuiKey_Apostrophe,
