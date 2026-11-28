@@ -461,14 +461,34 @@ export fn imgui_bridge_key(key: i32, down: bool) void {
     const io = ig.igGetIO();
     ig.ImGuiIO_AddKeyEvent(io, glfwToImguiKey(key), down);
     if (held_modifiers.update(key, down)) |change| {
-        const mod: ig.ImGuiKey = switch (change.mod) {
-            .shift => ig.ImGuiMod_Shift,
-            .ctrl => ig.ImGuiMod_Ctrl,
-            .alt => ig.ImGuiMod_Alt,
-            .super => ig.ImGuiMod_Super,
-        };
-        ig.ImGuiIO_AddKeyEvent(io, mod, change.down);
+        ig.ImGuiIO_AddKeyEvent(io, imguiMod(change.mod), change.down);
     }
+}
+
+/// The modifier flags an input event carried (GLFW's `mods` bits: Shift 1,
+/// Control 2, Alt 4, Super 8). The host calls this just before it forwards
+/// the event itself (`imgui_bridge_key`, `imgui_bridge_mouse_button`), so
+/// imgui has the modifiers that event was made with even when no modifier
+/// key event said so: one held before the window had focus, or a chord sent
+/// by an automation tool, which arrives as the plain key with the modifier
+/// only in its flags. Optional: a host that never calls it still gets the
+/// modifiers from the modifier keys' own events.
+export fn imgui_bridge_mods(mods: i32) void {
+    if (ig.igGetCurrentContext() == null) return;
+    const io = ig.igGetIO();
+    const changes = held_modifiers.flags(mods);
+    for (changes.slice()) |change| {
+        ig.ImGuiIO_AddKeyEvent(io, imguiMod(change.mod), change.down);
+    }
+}
+
+fn imguiMod(mod: key_mods.Mod) ig.ImGuiKey {
+    return switch (mod) {
+        .shift => ig.ImGuiMod_Shift,
+        .ctrl => ig.ImGuiMod_Ctrl,
+        .alt => ig.ImGuiMod_Alt,
+        .super => ig.ImGuiMod_Super,
+    };
 }
 
 /// True while a text field has focus (`io.WantTextInput`), so a host with an
